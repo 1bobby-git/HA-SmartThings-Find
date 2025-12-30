@@ -2,7 +2,8 @@ from __future__ import annotations
 
 DOMAIN = "smartthings_find"
 
-# legacy key name (upstream compatibility), but in this fork we store the FULL Cookie header string
+# Upstream compatibility key name.
+# This fork stores FULL browser Cookie header string here.
 CONF_JSESSIONID = "jsessionid"
 
 CONF_UPDATE_INTERVAL = "update_interval"

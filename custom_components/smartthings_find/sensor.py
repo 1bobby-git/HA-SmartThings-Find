@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.const import PERCENTAGE, UnitOfLength
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -12,8 +11,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 from .utils import get_battery_level
 from . import SmartThingsFindCoordinator
-
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
@@ -44,9 +41,7 @@ class _Base(CoordinatorEntity, SensorEntity):
 
     def _dev_name(self) -> str:
         d = self.coordinator.devices_by_id.get(self._dvce_id)
-        if not d:
-            return f"STF {self._dvce_id}"
-        return d["data"].get("modelName") or f"STF {self._dvce_id}"
+        return (d["data"].get("modelName") if d else None) or f"STF {self._dvce_id}"
 
     def _loc(self) -> dict:
         return (self.coordinator.data or {}).get(self._dvce_id) or {}
@@ -103,13 +98,16 @@ class SmartThingsFindAccuracySensor(_Base):
     def extra_state_attributes(self) -> dict[str, Any]:
         loc = self._loc()
         used = loc.get("used_loc") or {}
+        dt = used.get("gps_date")
         return {
-            "gps_date": used.get("gps_date").isoformat() if used.get("gps_date") else None,
+            "gps_date": dt.isoformat() if dt else None,
             "update_success": loc.get("update_success"),
         }
 
 
 class SmartThingsFindLastSeenSensor(_Base):
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
     @property
     def unique_id(self) -> str:
         return f"{self._entry_id}_{self._dvce_id}_last_seen"
@@ -119,11 +117,10 @@ class SmartThingsFindLastSeenSensor(_Base):
         return f"{self._dev_name()} Last Seen"
 
     @property
-    def native_value(self) -> str | None:
+    def native_value(self):
         loc = self._loc()
         used = loc.get("used_loc") or {}
-        dt = used.get("gps_date")
-        return dt.isoformat() if dt else None
+        return used.get("gps_date")  # datetime (timezone-aware)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

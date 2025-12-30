@@ -3,9 +3,9 @@
     "step": {
       "user": {
         "title": "SmartThings Find login (manual)",
-        "description": "After logging in at [smartthingsfind.samsung.com](https://smartthingsfind.samsung.com/), open DevTools → Network and copy the whole Request Headers → `Cookie:` line from the `chkLogin.do` request.\n\n1) Open: [smartthingsfind.samsung.com](https://smartthingsfind.samsung.com/)\n2) DevTools (F12) → Network\n3) Select `chkLogin.do` (refresh if needed)\n4) Copy Request Headers → `Cookie:` (entire line)\n5) Paste below",
+        "description": "1) Open: [smartthingsfind.samsung.com](https://smartthingsfind.samsung.com/)\n2) Log in in your browser, then open DevTools (F12) → Network\n3) Select the `chkLogin.do` request (refresh if needed)\n4) Copy Request Headers → the full `Cookie:` line\n5) Paste it below",
         "data": {
-          "jsessionid": "cookie_input"
+          "jsessionid": "Full Cookie header (e.g. Cookie: a=b; c=d)"
         }
       }
     },

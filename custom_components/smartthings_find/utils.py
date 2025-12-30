@@ -1,14 +1,13 @@
-import base64
+from __future__ import annotations
+
 import html
 import json
 import logging
 import re
-from datetime import datetime
-from io import BytesIO
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 import aiohttp
-import pytz
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry
@@ -29,12 +28,11 @@ URL_DEVICE_LIST = f"{STF_BASE}/device/getDeviceList.do"
 URL_REQUEST_LOC_UPDATE = f"{STF_BASE}/dm/addOperation.do"
 URL_SET_LAST_DEVICE = f"{STF_BASE}/device/setLastSelect.do"
 
-
 _TOKEN_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 
 def parse_cookie_header(cookie_header: str) -> Dict[str, str]:
-    """Parse raw 'Cookie:' header line (or pasted cookie string) into {name: value} dict."""
+    """Parse raw Cookie header into dict safe for aiohttp CookieJar."""
     if not cookie_header:
         return {}
 
@@ -49,11 +47,12 @@ def parse_cookie_header(cookie_header: str) -> Dict[str, str]:
         part = part.strip()
         if not part or "=" not in part:
             continue
+
         k, v = part.split("=", 1)
         k = k.strip()
         v = v.strip()
 
-        # handle bad pastes like "cookie sa_trace=..."
+        # Fix common bad paste: "cookie sa_trace=..."
         if " " in k and k.lower().startswith("cookie "):
             k = k.split(" ", 1)[1].strip()
 
@@ -81,17 +80,16 @@ def _looks_like_logout(status: int, body: str) -> bool:
 
 
 async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> None:
-    """Fetch CSRF header from chkLogin.do and validate session.
-
-    Samsung may return 200 with body 'fail' when session invalid.
-    """
+    """Validate session and fetch CSRF token."""
     async with session.get(URL_GET_CSRF) as response:
         text = await response.text()
+
         if response.status != 200:
             raise ConfigEntryAuthFailed(
                 f"SmartThings Find auth failed (chkLogin.do status={response.status}, body={text!r})"
             )
 
+        # Samsung returns 200 with body 'fail' when session invalid
         if text.strip() == "fail":
             raise ConfigEntryAuthFailed(
                 "SmartThings Find session invalid/expired (chkLogin.do returned 200 but body='fail')"
@@ -101,13 +99,13 @@ async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_
                 "SmartThings Find session invalid/expired (chkLogin.do returned 200 but body='Logout')"
             )
 
-        csrf_token = response.headers.get("_csrf")
-        if not csrf_token:
+        csrf = response.headers.get("_csrf")
+        if not csrf:
             raise ConfigEntryAuthFailed(
-                f"CSRF token not found in response headers (status={response.status}, body={text!r})"
+                f"CSRF token not found in response headers (status=200, body={text!r})"
             )
 
-        hass.data[DOMAIN][entry_id]["_csrf"] = csrf_token
+        hass.data[DOMAIN][entry_id]["_csrf"] = csrf
         _LOGGER.debug("Fetched CSRF token for %s", entry_id)
 
 
@@ -131,12 +129,9 @@ async def _request_text(
     data: Any = None,
     retry_auth_once: bool = True,
 ) -> Tuple[int, str, Dict[str, str]]:
-    """Request wrapper:
-    - Detect 401/403 or body 'Logout'/'fail'
-    - Refresh CSRF once and retry
-    - Still invalid => ConfigEntryAuthFailed (triggers reauth)
+    """Request wrapper with:
+    401/Logout/fail -> CSRF refresh once -> retry once -> ConfigEntryAuthFailed
     """
-
     async def _do() -> Tuple[int, str, Dict[str, str]]:
         async with session.request(method, url, headers=headers, json=json_payload, data=data) as resp:
             txt = await resp.text()
@@ -147,11 +142,8 @@ async def _request_text(
     if _looks_like_logout(status, txt):
         if retry_auth_once:
             _LOGGER.warning(
-                "Auth invalid for %s %s (status=%s, body=%r) -> CSRF refresh + retry once",
-                method,
-                url,
-                status,
-                (txt or "")[:200],
+                "Auth invalid (%s %s) status=%s body=%r -> CSRF refresh + retry once",
+                method, url, status, (txt or "")[:200],
             )
             await fetch_csrf(hass, session, entry_id)
             status, txt, hdrs = await _do()
@@ -189,19 +181,10 @@ async def _request_json(
     if status != 200:
         raise aiohttp.ClientResponseError(request_info=None, history=(), status=status, message=txt)
 
-    try:
-        return json.loads(txt)
-    except Exception as e:
-        raise aiohttp.ClientResponseError(
-            request_info=None,
-            history=(),
-            status=status,
-            message=f"JSON decode failed: {e} (body={txt!r})",
-        )
+    return json.loads(txt)
 
 
 async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> list:
-    """Retrieve list of devices from STF."""
     csrf = await _ensure_csrf(hass, session, entry_id)
     url = f"{URL_DEVICE_LIST}?_csrf={csrf}"
 
@@ -224,7 +207,6 @@ async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry
         identifier = (DOMAIN, device["dvceID"])
         ha_dev = device_registry.async_get(hass).async_get_device({identifier})
         if ha_dev and ha_dev.disabled:
-            _LOGGER.debug("Ignoring disabled device: %r", device["modelName"])
             continue
 
         ha_dev_info = DeviceInfo(
@@ -246,7 +228,6 @@ async def get_device_location(
     dev_data: dict,
     entry_id: str,
 ) -> Optional[dict]:
-    """Fetch current device location/ops. Active mode triggers update request first."""
     dev_id = dev_data["dvceID"]
     dev_name = dev_data.get("modelName", dev_id)
 
@@ -264,7 +245,6 @@ async def get_device_location(
         or (dev_data.get("deviceTypeCode") != "TAG" and hass.data[DOMAIN][entry_id][CONF_ACTIVE_MODE_OTHERS])
     )
 
-    # Active mode: request update
     if active:
         await _request_text(
             hass,
@@ -276,7 +256,6 @@ async def get_device_location(
             retry_auth_once=True,
         )
 
-    # Fetch operations/location
     status, txt, _ = await _request_text(
         hass,
         session,
@@ -318,39 +297,28 @@ async def get_device_location(
     used_loc = {"latitude": None, "longitude": None, "gps_accuracy": None, "gps_date": None}
 
     for op in data["operation"]:
-        if op.get("oprnType") not in ["LOCATION", "LASTLOC", "OFFLINE_LOC"]:
+        if op.get("oprnType") not in ("LOCATION", "LASTLOC", "OFFLINE_LOC"):
             continue
 
-        # plain lat/lon
+        # plain
         if "latitude" in op:
-            utc_date = None
-            if "extra" in op and "gpsUtcDt" in op["extra"]:
-                utc_date = parse_stf_date(op["extra"]["gpsUtcDt"])
-            else:
+            if "extra" not in op or "gpsUtcDt" not in op["extra"]:
                 continue
+            utc_date = parse_stf_date(op["extra"]["gpsUtcDt"])
 
             if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
                 continue
 
-            loc_found = False
-            if "latitude" in op:
-                used_loc["latitude"] = float(op["latitude"])
-                loc_found = True
-            if "longitude" in op:
-                used_loc["longitude"] = float(op["longitude"])
-                loc_found = True
+            used_loc["latitude"] = float(op.get("latitude")) if op.get("latitude") is not None else None
+            used_loc["longitude"] = float(op.get("longitude")) if op.get("longitude") is not None else None
+            res["location_found"] = (used_loc["latitude"] is not None and used_loc["longitude"] is not None)
 
-            if loc_found:
-                res["location_found"] = True
-
-            used_loc["gps_accuracy"] = calc_gps_accuracy(
-                op.get("horizontalUncertainty"), op.get("verticalUncertainty")
-            )
+            used_loc["gps_accuracy"] = calc_gps_accuracy(op.get("horizontalUncertainty"), op.get("verticalUncertainty"))
             used_loc["gps_date"] = utc_date
             used_op = op
             continue
 
-        # encLocation (may be encrypted)
+        # encLocation
         if "encLocation" in op:
             loc = op["encLocation"]
             if isinstance(loc, dict) and loc.get("encrypted"):
@@ -362,20 +330,11 @@ async def get_device_location(
             if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
                 continue
 
-            loc_found = False
-            if "latitude" in loc:
-                used_loc["latitude"] = float(loc["latitude"])
-                loc_found = True
-            if "longitude" in loc:
-                used_loc["longitude"] = float(loc["longitude"])
-                loc_found = True
+            used_loc["latitude"] = float(loc.get("latitude")) if loc.get("latitude") is not None else None
+            used_loc["longitude"] = float(loc.get("longitude")) if loc.get("longitude") is not None else None
+            res["location_found"] = (used_loc["latitude"] is not None and used_loc["longitude"] is not None)
 
-            if loc_found:
-                res["location_found"] = True
-
-            used_loc["gps_accuracy"] = calc_gps_accuracy(
-                loc.get("horizontalUncertainty"), loc.get("verticalUncertainty")
-            )
+            used_loc["gps_accuracy"] = calc_gps_accuracy(loc.get("horizontalUncertainty"), loc.get("verticalUncertainty"))
             used_loc["gps_date"] = utc_date
             used_op = op
 
@@ -386,59 +345,30 @@ async def get_device_location(
     return res
 
 
-def calc_gps_accuracy(hu: float, vu: float) -> Optional[float]:
+def calc_gps_accuracy(hu: Any, vu: Any) -> Optional[float]:
     try:
+        if hu is None or vu is None:
+            return None
         return round((float(hu) ** 2 + float(vu) ** 2) ** 0.5, 1)
     except Exception:
         return None
 
 
-def get_sub_location(ops: list, subDeviceName: str) -> tuple:
-    if not ops or not subDeviceName:
-        return {}, {}
-    for op in ops:
-        if subDeviceName in op.get("encLocation", {}):
-            loc = op["encLocation"][subDeviceName]
-            sub_loc = {
-                "latitude": float(loc["latitude"]),
-                "longitude": float(loc["longitude"]),
-                "gps_accuracy": calc_gps_accuracy(
-                    loc.get("horizontalUncertainty"), loc.get("verticalUncertainty")
-                ),
-                "gps_date": parse_stf_date(loc["gpsUtcDt"]),
-            }
-            return op, sub_loc
-    return {}, {}
-
-
 def parse_stf_date(datestr: str) -> datetime:
-    return datetime.strptime(datestr, "%Y%m%d%H%M%S").replace(tzinfo=pytz.UTC)
+    # STF format: YYYYmmddHHMMSS
+    return datetime.strptime(datestr, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
 
 
 def get_battery_level(dev_name: str, ops: list) -> Optional[int]:
-    for op in ops:
+    for op in ops or []:
         if op.get("oprnType") == "CHECK_CONNECTION" and "battery" in op:
             batt_raw = op["battery"]
-            batt = BATTERY_LEVELS.get(batt_raw, None)
+            batt = BATTERY_LEVELS.get(batt_raw)
             if batt is None:
                 try:
                     batt = int(batt_raw)
-                except ValueError:
-                    _LOGGER.warning("[%s]: invalid battery level: %r", dev_name, batt_raw)
-                    batt = None
+                except Exception:
+                    _LOGGER.warning("[%s] Invalid battery level: %r", dev_name, batt_raw)
+                    return None
             return batt
     return None
-
-
-def gen_qr_code_base64(data: str) -> str:
-    """Kept for compatibility; QR auth is deprecated. If qrcode isn't installed, returns empty."""
-    try:
-        import qrcode  # type: ignore
-    except Exception:
-        return ""
-    qr = qrcode.QRCode()
-    qr.add_data(data)
-    img = qr.make_image(fill_color="black", back_color="white")
-    buffer = BytesIO()
-    img.save(buffer, format="PNG")
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 
@@ -46,7 +47,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     cookie_header = entry.data.get(CONF_JSESSIONID, "") or ""
     cookies = parse_cookie_header(cookie_header)
 
-    # per-entry session (prevents Unclosed session warnings)
     session = async_create_clientsession(
         hass,
         cookie_jar=aiohttp.CookieJar(unsafe=True),
@@ -65,7 +65,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
     )
 
-    # validate cookie session + store csrf
+    # Validate auth and set csrf
     await fetch_csrf(hass, session, entry.entry_id)
 
     devices = await get_devices(hass, session, entry.entry_id)
@@ -78,7 +78,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         devices=devices,
         update_interval_s=update_interval,
     )
-
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id].update(
@@ -96,20 +95,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
-    if data:
-        sess = data.get("session")
-        if sess:
-            try:
-                await sess.close()
-            except Exception:
-                pass
+    if data and (sess := data.get("session")):
+        try:
+            await sess.close()
+        except Exception:
+            pass
 
     return unload_ok
 
 
 class SmartThingsFindCoordinator(DataUpdateCoordinator[dict]):
-    """Fetch and store SmartThings Find data for all devices."""
-
     def __init__(
         self,
         hass: HomeAssistant,
@@ -120,8 +115,6 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict]):
     ) -> None:
         self.entry = entry
         self.session = session
-
-        # devices list elements: {"data": <dev>, "ha_dev_info": DeviceInfo}
         self.devices = devices
         self.devices_by_id = {d["data"]["dvceID"]: d for d in devices}
 
@@ -133,50 +126,37 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict]):
         )
 
     async def async_refresh_device(self, dvce_id: str) -> None:
-        """Refresh just one device (used by button)."""
-        if dvce_id not in self.devices_by_id:
+        d = self.devices_by_id.get(dvce_id)
+        if not d:
             return
-
-        dev_data = self.devices_by_id[dvce_id]["data"]
+        dev_data = d["data"]
         loc = await get_device_location(self.hass, self.session, dev_data, self.entry.entry_id)
-
         new = dict(self.data or {})
         new[dvce_id] = loc
         self.async_set_updated_data(new)
 
     async def _async_update_data(self) -> dict:
-        try:
-            # Limit concurrency to avoid hammering STF
-            sem = aiohttp.Semaphore(4)  # type: ignore[attr-defined]
-        except Exception:
-            sem = None
+        sem = asyncio.Semaphore(4)
 
         async def _fetch_one(d: dict):
             dev = d["data"]
             dvce_id = dev["dvceID"]
-
-            if sem:
-                async with sem:
-                    return dvce_id, await get_device_location(
-                        self.hass, self.session, dev, self.entry.entry_id
-                    )
-            return dvce_id, await get_device_location(
-                self.hass, self.session, dev, self.entry.entry_id
-            )
+            async with sem:
+                return dvce_id, await get_device_location(
+                    self.hass, self.session, dev, self.entry.entry_id
+                )
 
         try:
-            results = await aiohttp.helpers.asyncio.gather(  # type: ignore[attr-defined]
-                *[_fetch_one(d) for d in self.devices], return_exceptions=True
+            results = await asyncio.gather(
+                *[_fetch_one(d) for d in self.devices],
+                return_exceptions=True,
             )
-        except Exception:
-            # fallback (no aiohttp helper)
-            import asyncio
-            results = await asyncio.gather(*[_fetch_one(d) for d in self.devices], return_exceptions=True)
+        except Exception as err:
+            raise UpdateFailed(f"Coordinator update failed: {err}") from err
 
         data: dict = {}
         for item in results:
             if isinstance(item, Exception):
-                # keep going; errors are logged inside utils
                 continue
             dvce_id, loc = item
             data[dvce_id] = loc

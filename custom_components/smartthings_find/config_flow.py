@@ -49,12 +49,13 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 try:
                     apply_cookies_to_session(session, cookies)
+
+                    # Validate immediately
                     self.hass.data.setdefault(DOMAIN, {})
                     self.hass.data[DOMAIN].setdefault("config_flow_tmp", {})
                     await fetch_csrf(self.hass, session, "config_flow_tmp")
 
                     data = {CONF_JSESSIONID: cookie_header}
-
                     if self._reauth_entry:
                         return self.async_update_reload_and_abort(self._reauth_entry, data=data)
 
@@ -78,6 +79,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=schema,
             errors=errors,
+            description_placeholders={},  # text is in translations (with clickable markdown)
         )
 
     async def async_step_reauth(self, user_input: dict[str, Any] | None = None):
