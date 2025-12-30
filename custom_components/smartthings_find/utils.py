@@ -1,285 +1,321 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
 import re
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any
 
 import aiohttp
 import pytz
+from http.cookies import SimpleCookie, CookieError
 from yarl import URL
 
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import device_registry
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.entity import DeviceInfo
 
 from .const import (
     DOMAIN,
-    SMARTTHINGS_DOMAIN,
-    STF_BASE,
-    URL_DEVICE_LIST,
-    URL_GET_CSRF,
-    URL_REQUEST_OPERATION,
-    URL_SET_LAST_DEVICE,
     BATTERY_LEVELS,
+    CONF_ACTIVE_MODE_SMARTTAGS,
+    CONF_ACTIVE_MODE_OTHERS,
+    CONF_ST_IDENTIFIER,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-_COOKIE_PREFIX_RE = re.compile(r"^\s*cookie\s*:\s*", re.IGNORECASE)
+STF_BASE = URL("https://smartthingsfind.samsung.com/")
+URL_CHK_LOGIN = STF_BASE / "chkLogin.do"
+URL_DEVICE_LIST = STF_BASE / "device/getDeviceList.do"
+URL_SET_LAST_DEVICE = STF_BASE / "device/setLastSelect.do"
+URL_ADD_OPERATION = STF_BASE / "dm/addOperation.do"  # requires ?_csrf=
 
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.6",
-    "Referer": STF_BASE + "/",
-    "Origin": STF_BASE,
-}
+# Operations (reverse engineered / website behavior)
+OP_RING = "RING"
+OP_CHECK_CONNECTION_WITH_LOCATION = "CHECK_CONNECTION_WITH_LOCATION"
+OP_LOCATION = "LOCATION"
+OP_CHECK_CONNECTION = "CHECK_CONNECTION"
+
+# Phone extra buttons (best-effort)
+OP_LOCK = "LOCK"
+OP_ERASE = "ERASE"
+OP_TRACK = "TRACKING"
+OP_EXTEND_BATTERY = "EXTEND_BATTERY"
+
+COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+# ✅ JSON-safe smartthings identifier encoding
+# We store options as: "smartthings::<value>"
+_ST_IDENT_PREFIX = "smartthings::"
 
 
-def _norm(s: str | None) -> str:
-    """이름 매칭용 normalize"""
+def parse_cookie_header(cookie_header_line: str) -> dict[str, str]:
+    """
+    Accepts:
+      - "Cookie: a=b; c=d"
+      - "a=b; c=d"
+    Returns dict of cookies safe for aiohttp CookieJar.
+    """
+    s = (cookie_header_line or "").strip()
     if not s:
-        return ""
-    s = s.strip().lower()
-    # 공백/특수문자 제거
-    s = re.sub(r"[\s\-_]+", "", s)
-    s = re.sub(r"[^\w가-힣]+", "", s)
-    return s
-
-
-def _iter_smartthings_devices(dr: device_registry.DeviceRegistry) -> Iterable[device_registry.DeviceEntry]:
-    for dev in dr.devices.values():
-        if any(i[0] == SMARTTHINGS_DOMAIN for i in dev.identifiers):
-            yield dev
-
-
-def _pick_best_smartthings_identifier(
-    hass: HomeAssistant,
-    stf_name: str,
-    stf_model: str | None = None,
-) -> tuple[str, str] | None:
-    """
-    SmartThings 공식 통합의 DeviceEntry를 '이름/모델'로 찾아 identifiers 중 ("smartthings", xxx) 반환.
-    - 이름이 정확히 일치하면 우선
-    - 동명이 다수면 model까지 일치해야 병합
-    """
-    dr = device_registry.async_get(hass)
-    target_name = _norm(stf_name)
-    target_model = (stf_model or "").strip().lower()
-
-    candidates: list[tuple[int, device_registry.DeviceEntry, tuple[str, str]]] = []
-
-    for dev in _iter_smartthings_devices(dr):
-        name = dev.name_by_user or dev.name or ""
-        score = 0
-
-        if _norm(name) == target_name and target_name:
-            score += 100
-
-        # manufacturer/model 힌트
-        if dev.manufacturer and "samsung" in dev.manufacturer.lower():
-            score += 10
-
-        if target_model and dev.model and dev.model.strip().lower() == target_model:
-            score += 30
-
-        if score <= 0:
-            continue
-
-        # smartthings identifier 하나 선택
-        st_ids = [i for i in dev.identifiers if i[0] == SMARTTHINGS_DOMAIN]
-        if not st_ids:
-            continue
-
-        # 보통 1개지만, 여러개면 첫번째 사용
-        candidates.append((score, dev, st_ids[0]))
-
-    if not candidates:
-        return None
-
-    # 점수 높은 순
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    best_score = candidates[0][0]
-    best = [c for c in candidates if c[0] == best_score]
-
-    # 동점이 여러개면(동명이 여러개) → model까지 일치한 것만 남기고 다시 결정
-    if len(best) > 1 and target_model:
-        best2 = []
-        for score, dev, st_id in best:
-            if dev.model and dev.model.strip().lower() == target_model:
-                best2.append((score + 50, dev, st_id))
-        if best2:
-            best2.sort(key=lambda x: x[0], reverse=True)
-            best_score = best2[0][0]
-            best = [c for c in best2 if c[0] == best_score]
-
-    # 그래도 다수면 병합 위험 → 병합 안 함
-    if len(best) > 1:
-        _LOGGER.warning(
-            "SmartThings device merge skipped: multiple candidates for name='%s' model='%s': %s",
-            stf_name,
-            stf_model,
-            [b[1].id for b in best],
-        )
-        return None
-
-    chosen = best[0][2]
-    _LOGGER.debug(
-        "SmartThings device merge matched: STF name='%s' model='%s' -> ST identifier=%s",
-        stf_name,
-        stf_model,
-        chosen,
-    )
-    return chosen
-
-
-def parse_cookie_header(raw: str) -> dict[str, str]:
-    if not raw:
         return {}
-    raw = raw.strip()
-    raw = _COOKIE_PREFIX_RE.sub("", raw).strip()
-    if not raw:
-        return {}
-    cookies: dict[str, str] = {}
-    parts = [p.strip() for p in raw.split(";") if p.strip()]
-    for part in parts:
-        if "=" not in part:
+
+    if s.lower().startswith("cookie:"):
+        s = s.split(":", 1)[1].strip()
+
+    jar: dict[str, str] = {}
+    try:
+        sc = SimpleCookie()
+        sc.load(s)
+        for k, morsel in sc.items():
+            if COOKIE_NAME_RE.match(k):
+                jar[k] = morsel.value
+        if jar:
+            return jar
+    except CookieError:
+        pass
+
+    for part in s.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
             continue
         k, v = part.split("=", 1)
         k = k.strip()
         v = v.strip()
-        if not k or re.search(r"\s", k):
+        if not k or " " in k:
             continue
-        cookies[k] = v
-    return cookies
+        if not COOKIE_NAME_RE.match(k):
+            continue
+        jar[k] = v
+
+    return jar
 
 
 def apply_cookies_to_session(session: aiohttp.ClientSession, cookies: dict[str, str]) -> None:
-    session.cookie_jar.update_cookies(cookies, response_url=URL(STF_BASE))
-
-
-async def make_isolated_session(hass: HomeAssistant) -> aiohttp.ClientSession:
-    jar = aiohttp.CookieJar()
-    return async_create_clientsession(hass, headers=DEFAULT_HEADERS, cookie_jar=jar)
-
-
-async def make_session_with_cookie(hass: HomeAssistant, cookie_header: str) -> aiohttp.ClientSession:
-    session = await make_isolated_session(hass)
-    cookies = parse_cookie_header(cookie_header)
+    """
+    aiohttp requires response_url to be yarl.URL, not str.
+    """
     if not cookies:
-        await session.close()
-        raise ConfigEntryAuthFailed("missing_cookie")
-    apply_cookies_to_session(session, cookies)
-    return session
+        return
+    session.cookie_jar.update_cookies(cookies, response_url=STF_BASE)
 
 
-# 구버전 호환
-async def make_session(hass: HomeAssistant, cookie_header: str) -> aiohttp.ClientSession:
-    return await make_session_with_cookie(hass, cookie_header)
-
-
-async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, *_args: Any) -> str:
-    async with session.get(URL_GET_CSRF) as resp:
-        body = (await resp.text()).strip()
-        if resp.status != 200:
-            raise ConfigEntryAuthFailed(f"SmartThings Find auth failed (status={resp.status})")
-        csrf = resp.headers.get("_csrf")
-        if csrf:
-            return csrf
-        if body.lower() in ("fail", "logout"):
-            raise ConfigEntryAuthFailed(
-                f"SmartThings Find session invalid/expired (chkLogin.do body='{body}')"
-            )
-        raise ConfigEntryAuthFailed("CSRF token not found in chkLogin.do response")
-
-
-def _build_device_info(hass: HomeAssistant, dev: dict[str, Any]) -> DeviceInfo:
+def make_session(hass: HomeAssistant) -> aiohttp.ClientSession:
     """
-    ✅ 핵심:
-    1) 우리 식별자 (DOMAIN, dvceID)
-    2) SmartThings 공식 통합 기기가 있으면 그 identifier도 추가해서 같은 Device로 병합
+    Dedicated session (not HA global shared session) to avoid polluting other integrations.
+    CookieJar unsafe=True allows cookies for IPs / relaxed rules.
     """
-    dvce_id = dev["dvceID"]
-    identifier_ours = (DOMAIN, dvce_id)
-
-    model_name = html.unescape(html.unescape(dev.get("modelName") or "Unknown"))
-    model_id = dev.get("modelID") or None
-
-    identifiers = {identifier_ours}
-
-    # 🔥 기존 "dvceID가 smartthings id와 같을 때만" merge → 실패가 많음
-    # ✅ 이제는 Device Registry에서 이름/모델 매칭으로 smartthings identifier 찾아 붙임
-    st_identifier = _pick_best_smartthings_identifier(hass, model_name, model_id)
-    if st_identifier:
-        identifiers.add(st_identifier)
-
-    return DeviceInfo(
-        identifiers=identifiers,
-        manufacturer="Samsung",
-        name=model_name,
-        model=model_id or "Unknown",
-        configuration_url=STF_BASE,
+    jar = aiohttp.CookieJar(unsafe=True)
+    return async_create_clientsession(
+        hass,
+        cookie_jar=jar,
+        raise_for_status=False,
     )
 
 
-async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, csrf: str) -> list[dict[str, Any]]:
-    url = f"{URL_DEVICE_LIST}?_csrf={csrf}"
+async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str | None = None) -> str:
+    """
+    Calls chkLogin.do and returns CSRF from header "_csrf".
+    If entry_id is given, also stores it in hass.data[DOMAIN][entry_id]["_csrf"].
+    """
+    async with session.get(URL_CHK_LOGIN) as resp:
+        text = await resp.text()
+        csrf = resp.headers.get("_csrf")
+
+        _LOGGER.debug("chkLogin.do status=%s csrf=%s body=%s", resp.status, bool(csrf), text[:200])
+
+        if resp.status == 401 or text.strip() in ("fail", "Logout"):
+            raise ConfigEntryAuthFailed(
+                f"SmartThings Find session invalid/expired (chkLogin.do returned {resp.status} but body='{text.strip()}')"
+            )
+
+        if resp.status != 200 or not csrf:
+            raise ConfigEntryAuthFailed(
+                f"CSRF token not found. status={resp.status}, csrf={bool(csrf)}, body='{text[:120]}'"
+            )
+
+        if entry_id is not None:
+            hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})["_csrf"] = csrf
+
+        return csrf
+
+
+# =========================
+# ✅ 0.3.16 SmartThings mapping helpers
+# =========================
+
+def list_smartthings_devices_for_ui(hass: HomeAssistant) -> list[tuple[str, str]]:
+    """
+    Returns list of (device_registry_id, label) for SmartThings official devices.
+    """
+    dr = device_registry.async_get(hass)
+    items: list[tuple[str, str]] = []
+
+    for dev in dr.devices.values():
+        if not dev.identifiers:
+            continue
+        if not any(i[0] == "smartthings" for i in dev.identifiers):
+            continue
+
+        name = dev.name_by_user or dev.name or dev.model or dev.id
+        label = name
+        if dev.model:
+            label = f"{name} ({dev.model})"
+        items.append((dev.id, label))
+
+    items.sort(key=lambda x: x[1].lower())
+    return items
+
+
+def _encode_smartthings_identifier(ident: tuple[str, str]) -> str:
+    # ident example: ("smartthings", "<deviceId>")
+    if not ident or len(ident) != 2:
+        return ""
+    if ident[0] != "smartthings":
+        return ""
+    return f"{_ST_IDENT_PREFIX}{ident[1]}"
+
+
+def _decode_smartthings_identifier(value: Any) -> tuple[str, str] | None:
+    """
+    Accepts stored option value which can be str or list/tuple (older attempts).
+    Returns ("smartthings", "...") or None.
+    """
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        if value[0] == "smartthings" and isinstance(value[1], str):
+            return ("smartthings", value[1])
+        return None
+
+    if isinstance(value, str):
+        if value.startswith(_ST_IDENT_PREFIX):
+            return ("smartthings", value[len(_ST_IDENT_PREFIX):])
+        # tolerate raw identifier value
+        if value and "::" not in value:
+            return ("smartthings", value)
+    return None
+
+
+def get_smartthings_identifier_value_by_device_id(hass: HomeAssistant, device_id: str) -> str:
+    """
+    device_registry DeviceEntry.id로부터 smartthings identifier를 찾아 JSON-safe string으로 반환.
+    returns "smartthings::<identifier_value>" or ""
+    """
+    dr = device_registry.async_get(hass)
+    dev = dr.devices.get(device_id)
+    if not dev or not dev.identifiers:
+        return ""
+
+    st_idents = [i for i in dev.identifiers if i[0] == "smartthings"]
+    if not st_idents:
+        return ""
+
+    return _encode_smartthings_identifier(st_idents[0])
+
+
+def _find_matching_smartthings_identifiers_by_name(hass: HomeAssistant, name: str) -> set[tuple[str, str]]:
+    """
+    Best-effort fallback (only used if user did not select mapping option).
+    """
+    dr = device_registry.async_get(hass)
+    name_norm = (name or "").strip().lower()
+
+    for dev in dr.devices.values():
+        if not dev.name:
+            continue
+        if dev.name.strip().lower() != name_norm:
+            continue
+        for ident in dev.identifiers:
+            if ident and len(ident) == 2 and ident[0] == "smartthings":
+                return set(dev.identifiers)
+
+    return set()
+
+
+async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> list[dict[str, Any]]:
+    """
+    device/getDeviceList.do requires csrf in query string.
+    """
+    csrf = hass.data[DOMAIN][entry_id]["_csrf"]
+    url = URL_DEVICE_LIST.update_query({"_csrf": csrf})
+
     async with session.post(url, headers={"Accept": "application/json"}, data={}) as resp:
         if resp.status != 200:
-            _LOGGER.error("Failed to retrieve devices [%s]: %s", resp.status, await resp.text())
-            if resp.status in (401, 403):
-                raise ConfigEntryAuthFailed("auth_failed_get_devices")
+            body = await resp.text()
+            _LOGGER.error("Failed to retrieve devices [%s]: %s", resp.status, body[:200])
+            if resp.status in (401, 403) or body.strip() in ("Logout", "fail"):
+                raise ConfigEntryAuthFailed("Session invalid while fetching devices")
             return []
 
-        payload = await resp.json()
-        devices_data = payload.get("deviceList", []) or []
+        data = await resp.json()
+        devices_data = data.get("deviceList", [])
+        devices: list[dict[str, Any]] = []
 
-        results: list[dict[str, Any]] = []
         dr = device_registry.async_get(hass)
 
-        for dev in devices_data:
-            identifier = (DOMAIN, dev["dvceID"])
-            ha_dev = dr.async_get_device({identifier})
+        # ✅ exact mapping from options (preferred)
+        opt_ident_raw = hass.data.get(DOMAIN, {}).get(entry_id, {}).get(CONF_ST_IDENTIFIER)
+        opt_ident = _decode_smartthings_identifier(opt_ident_raw)
+
+        for d in devices_data:
+            d["modelName"] = html.unescape(html.unescape(d.get("modelName", "")))
+
+            dvce_id = d.get("dvceID")
+            model_name = d.get("modelName") or str(dvce_id) or "SmartThings Find device"
+
+            our_identifier = (DOMAIN, str(dvce_id))
+
+            identifiers: set[tuple[str, str]] = {our_identifier}
+
+            # ✅ If user selected SmartThings device mapping -> add it (100% deterministic merge)
+            if opt_ident:
+                identifiers.add(opt_ident)
+            else:
+                # fallback only when not mapped
+                identifiers |= _find_matching_smartthings_identifiers_by_name(hass, model_name)
+
+            ha_dev = dr.async_get_device({our_identifier})
             if ha_dev and ha_dev.disabled:
+                _LOGGER.debug("Ignoring disabled device: %s", model_name)
                 continue
 
-            dev["modelName"] = html.unescape(html.unescape(dev.get("modelName") or "Unknown"))
-            results.append({"data": dev, "ha_dev_info": _build_device_info(hass, dev)})
+            ha_dev_info = DeviceInfo(
+                identifiers=identifiers,
+                manufacturer="Samsung",
+                name=model_name,
+                model=str(d.get("modelID") or ""),
+                configuration_url=str(STF_BASE),
+            )
 
-        return results
+            devices.append({"data": d, "ha_dev_info": ha_dev_info})
+
+        return devices
 
 
 def parse_stf_date(datestr: str) -> datetime:
     return datetime.strptime(datestr, "%Y%m%d%H%M%S").replace(tzinfo=pytz.UTC)
 
 
-def calc_gps_accuracy(hu: float | None, vu: float | None) -> float | None:
+def calc_gps_accuracy(hu: Any, vu: Any) -> float | None:
     try:
-        if hu is None and vu is None:
-            return None
-        hu_f = float(hu or 0)
-        vu_f = float(vu or 0)
-        return round((hu_f**2 + vu_f**2) ** 0.5, 1)
+        return round((float(hu) ** 2 + float(vu) ** 2) ** 0.5, 1)
     except Exception:
         return None
 
 
-def get_battery_level(ops: list[dict[str, Any]]) -> int | None:
+def get_battery_level(_dev_name: str, ops: list[dict[str, Any]]) -> int | None:
     for op in ops or []:
-        if op.get("oprnType") == "CHECK_CONNECTION" and "battery" in op:
-            batt_raw = str(op.get("battery"))
-            mapped = BATTERY_LEVELS.get(batt_raw)
-            if mapped is not None:
-                return mapped
+        if op.get("oprnType") == OP_CHECK_CONNECTION and "battery" in op:
+            batt_raw = op.get("battery")
+            if batt_raw is None:
+                return None
+            batt = BATTERY_LEVELS.get(str(batt_raw), None)
+            if batt is not None:
+                return batt
             try:
                 return int(batt_raw)
             except Exception:
@@ -287,129 +323,185 @@ def get_battery_level(ops: list[dict[str, Any]]) -> int | None:
     return None
 
 
-async def send_operation(
-    session: aiohttp.ClientSession,
-    csrf: str,
-    dvce_id: str,
-    usr_id: str | None,
-    operation: str,
-    status: str | None = None,
-) -> None:
-    url = f"{URL_REQUEST_OPERATION}?_csrf={csrf}"
-    payload: dict[str, Any] = {"dvceId": dvce_id, "operation": operation}
-    if usr_id:
-        payload["usrId"] = usr_id
-    if status:
-        payload["status"] = status
+def get_sub_location(ops: list[dict[str, Any]], sub_device_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not ops or not sub_device_name:
+        return {}, {}
+    for op in ops:
+        enc = op.get("encLocation", {})
+        if isinstance(enc, dict) and sub_device_name in enc:
+            loc = enc[sub_device_name]
+            sub_loc = {
+                "latitude": float(loc.get("latitude")),
+                "longitude": float(loc.get("longitude")),
+                "gps_accuracy": calc_gps_accuracy(loc.get("horizontalUncertainty"), loc.get("verticalUncertainty")),
+                "gps_date": parse_stf_date(loc.get("gpsUtcDt")),
+            }
+            return op, sub_loc
+    return {}, {}
 
-    async with session.post(url, json=payload) as resp:
-        txt = (await resp.text()).strip()
-        if resp.status >= 400:
-            _LOGGER.warning(
-                "Operation %s failed for %s (%s): %s", operation, dvce_id, resp.status, txt[:200]
-            )
+
+async def _post_json(session: aiohttp.ClientSession, url: URL, payload: dict[str, Any]) -> tuple[int, str]:
+    async with session.post(url, json=payload, headers={"Accept": "application/json"}) as resp:
+        text = await resp.text()
+        return resp.status, text
+
+
+async def send_operation(
+    hass: HomeAssistant,
+    session: aiohttp.ClientSession,
+    entry_id: str,
+    payload: dict[str, Any],
+) -> None:
+    csrf = hass.data[DOMAIN][entry_id]["_csrf"]
+    url = URL_ADD_OPERATION.update_query({"_csrf": csrf})
+
+    status, text = await _post_json(session, url, payload)
+    if status != 200:
+        _LOGGER.error("Operation failed status=%s body=%s payload=%s", status, text[:200], payload)
+        if status in (401, 403) or text.strip() in ("Logout", "fail"):
+            raise ConfigEntryAuthFailed(f"Session invalid while sending operation: {status} '{text.strip()}'")
+        raise HomeAssistantError(f"SmartThings Find operation failed: {status}")
+
 
 async def get_device_location(
     hass: HomeAssistant,
     session: aiohttp.ClientSession,
-    csrf: str,
     dev_data: dict[str, Any],
-    active_tags: bool,
-    active_others: bool,
-    retry_on_unauth: bool = True,
+    entry_id: str,
 ) -> dict[str, Any] | None:
-    dev_id = dev_data["dvceID"]
-    dev_name = dev_data.get("modelName") or dev_id
-    usr_id = dev_data.get("usrId")
+    dev_id = dev_data.get("dvceID")
+    dev_name = dev_data.get("modelName", dev_id)
+
+    csrf = hass.data[DOMAIN][entry_id]["_csrf"]
+
+    set_last_payload = {"dvceId": dev_id, "removeDevice": []}
+    update_payload = {"dvceId": dev_id, "operation": OP_CHECK_CONNECTION_WITH_LOCATION, "usrId": dev_data.get("usrId")}
 
     try:
-        is_tag = dev_data.get("deviceTypeCode") == "TAG"
-        active = (is_tag and active_tags) or ((not is_tag) and active_others)
+        active = (
+            (dev_data.get("deviceTypeCode") == "TAG" and hass.data[DOMAIN][entry_id].get(CONF_ACTIVE_MODE_SMARTTAGS))
+            or (dev_data.get("deviceTypeCode") != "TAG" and hass.data[DOMAIN][entry_id].get(CONF_ACTIVE_MODE_OTHERS))
+        )
 
         if active:
-            await send_operation(session, csrf, dev_id, usr_id, "CHECK_CONNECTION_WITH_LOCATION")
+            await _post_json(session, URL_ADD_OPERATION.update_query({"_csrf": csrf}), update_payload)
 
-        url = f"{URL_SET_LAST_DEVICE}?_csrf={csrf}"
-        set_last_payload = {"dvceId": dev_id, "removeDevice": []}
-
-        async with session.post(url, json=set_last_payload, headers={"Accept": "application/json"}) as resp:
-            txt = (await resp.text()).strip()
-
-            if resp.status in (401, 403) or txt == "Logout":
-                if retry_on_unauth:
-                    _LOGGER.warning("[%s] Session invalid, retrying once with new CSRF...", dev_name)
-                    new_csrf = await fetch_csrf(hass, session)
-                    return await get_device_location(
-                        hass, session, new_csrf, dev_data, active_tags, active_others, retry_on_unauth=False
-                    )
-                raise ConfigEntryAuthFailed(f"Session invalid while fetching location: {resp.status} '{txt}'")
+        async with session.post(
+            URL_SET_LAST_DEVICE.update_query({"_csrf": csrf}),
+            json=set_last_payload,
+            headers={"Accept": "application/json"},
+        ) as resp:
+            text = await resp.text()
 
             if resp.status != 200:
-                _LOGGER.error("[%s] Failed to fetch device data (%s): %s", dev_name, resp.status, txt[:200])
+                _LOGGER.error("[%s] Failed to fetch device data (%s): %s", dev_name, resp.status, text[:200])
+                if resp.status in (401, 403) or text.strip() in ("Logout", "fail"):
+                    raise ConfigEntryAuthFailed(f"Session invalid while fetching location: {resp.status} '{text.strip()}'")
                 return None
 
-            data = json.loads(txt) if txt and txt[0] in "{[" else await resp.json()
+            data = json.loads(text) if text else {}
+            res: dict[str, Any] = {
+                "dev_name": dev_name,
+                "dev_id": dev_id,
+                "update_success": True,
+                "location_found": False,
+                "used_op": None,
+                "used_loc": None,
+                "ops": [],
+            }
 
-        ops = data.get("operation") or []
-        used_op = None
-        used_loc = {"latitude": None, "longitude": None, "gps_accuracy": None, "gps_date": None}
+            ops = data.get("operation") or []
+            if not ops:
+                res["update_success"] = False
+                return res
 
-        for op in ops:
-            t = op.get("oprnType")
-            if t not in ("LOCATION", "LASTLOC", "OFFLINE_LOC"):
-                continue
+            res["ops"] = ops
 
-            if "latitude" in op or "longitude" in op:
-                extra = op.get("extra") or {}
-                if "gpsUtcDt" not in extra:
-                    continue
+            used_op = None
+            used_loc = {"latitude": None, "longitude": None, "gps_accuracy": None, "gps_date": None}
 
-                utc_date = parse_stf_date(extra["gpsUtcDt"])
-                if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
-                    continue
+            for op in ops:
+                if op.get("oprnType") in ("LOCATION", "LASTLOC", "OFFLINE_LOC"):
+                    if "latitude" in op or "longitude" in op:
+                        utc_date = None
+                        extra = op.get("extra") or {}
+                        if "gpsUtcDt" in extra:
+                            utc_date = parse_stf_date(extra["gpsUtcDt"])
+                        else:
+                            continue
 
-                used_loc["latitude"] = float(op.get("latitude")) if op.get("latitude") is not None else None
-                used_loc["longitude"] = float(op.get("longitude")) if op.get("longitude") is not None else None
-                used_loc["gps_accuracy"] = calc_gps_accuracy(
-                    op.get("horizontalUncertainty"), op.get("verticalUncertainty")
-                )
-                used_loc["gps_date"] = utc_date
-                used_op = op
-                continue
+                        if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
+                            continue
 
-            if "encLocation" in op:
-                loc = op["encLocation"]
-                if isinstance(loc, dict) and loc.get("encrypted") is True:
-                    continue
-                if "gpsUtcDt" not in loc:
-                    continue
+                        if "latitude" in op:
+                            used_loc["latitude"] = float(op["latitude"])
+                        if "longitude" in op:
+                            used_loc["longitude"] = float(op["longitude"])
 
-                utc_date = parse_stf_date(loc["gpsUtcDt"])
-                if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
-                    continue
+                        used_loc["gps_accuracy"] = calc_gps_accuracy(
+                            op.get("horizontalUncertainty"), op.get("verticalUncertainty")
+                        )
+                        used_loc["gps_date"] = utc_date
+                        used_op = op
+                        res["location_found"] = True
 
-                used_loc["latitude"] = float(loc.get("latitude")) if loc.get("latitude") is not None else None
-                used_loc["longitude"] = float(loc.get("longitude")) if loc.get("longitude") is not None else None
-                used_loc["gps_accuracy"] = calc_gps_accuracy(
-                    loc.get("horizontalUncertainty"), loc.get("verticalUncertainty")
-                )
-                used_loc["gps_date"] = utc_date
-                used_op = op
+                    elif "encLocation" in op:
+                        loc = op["encLocation"]
+                        if isinstance(loc, dict) and loc.get("encrypted") is True:
+                            continue
+                        if isinstance(loc, dict) and "gpsUtcDt" in loc:
+                            utc_date = parse_stf_date(loc["gpsUtcDt"])
+                            if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
+                                continue
+                            if "latitude" in loc:
+                                used_loc["latitude"] = float(loc["latitude"])
+                            if "longitude" in loc:
+                                used_loc["longitude"] = float(loc["longitude"])
+                            used_loc["gps_accuracy"] = calc_gps_accuracy(
+                                loc.get("horizontalUncertainty"), loc.get("verticalUncertainty")
+                            )
+                            used_loc["gps_date"] = utc_date
+                            used_op = op
+                            res["location_found"] = True
 
-        return {
-            "dev_id": dev_id,
-            "dev_name": dev_name,
-            "usr_id": usr_id,
-            "ops": ops,
-            "used_op": used_op,
-            "used_loc": used_loc,
-            "location_found": bool(used_loc["latitude"] is not None and used_loc["longitude"] is not None),
-            "battery_level": get_battery_level(ops),
-            "fetched_at": datetime.now(tz=pytz.UTC),
-        }
+            res["used_op"] = used_op
+            res["used_loc"] = used_loc
+            return res
 
     except ConfigEntryAuthFailed:
         raise
     except Exception as e:
-        _LOGGER.exception("[%s] Exception while fetching location: %s", dev_name, e)
+        _LOGGER.error("[%s] Exception in get_device_location: %s", dev_name, e, exc_info=True)
         return None
+
+
+async def ring_device(
+    hass: HomeAssistant,
+    session: aiohttp.ClientSession,
+    entry_id: str,
+    dev_data: dict[str, Any],
+    start: bool,
+) -> None:
+    payload = {
+        "dvceId": dev_data.get("dvceID"),
+        "operation": OP_RING,
+        "usrId": dev_data.get("usrId"),
+        "status": "start" if start else "stop",
+        "lockMessage": "SmartThings Find is trying to find this device.",
+    }
+    await send_operation(hass, session, entry_id, payload)
+
+
+async def phone_action(
+    hass: HomeAssistant,
+    session: aiohttp.ClientSession,
+    entry_id: str,
+    dev_data: dict[str, Any],
+    op: str,
+) -> None:
+    payload = {
+        "dvceId": dev_data.get("dvceID"),
+        "operation": op,
+        "usrId": dev_data.get("usrId"),
+    }
+    await send_operation(hass, session, entry_id, payload)

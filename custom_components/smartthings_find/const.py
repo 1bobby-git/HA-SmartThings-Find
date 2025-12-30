@@ -1,38 +1,35 @@
-from __future__ import annotations
-
 DOMAIN = "smartthings_find"
 
 # Config keys
-CONF_COOKIE_INPUT = "cookie_input"
-CONF_JSESSIONID = "jsessionid"  # legacy alias (구버전 호환)
-
+CONF_COOKIE = "cookie"
 CONF_UPDATE_INTERVAL = "update_interval"
 CONF_UPDATE_INTERVAL_DEFAULT = 60
 
 CONF_ACTIVE_MODE_SMARTTAGS = "active_mode_smarttags"
-CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT = True
+CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT = False
 
 CONF_ACTIVE_MODE_OTHERS = "active_mode_others"
 CONF_ACTIVE_MODE_OTHERS_DEFAULT = False
 
-PLATFORMS = ["device_tracker", "sensor", "button"]
+# ✅ 0.3.16: SmartThings official device mapping (Options)
+# - device_registry id 선택(드롭다운)
+CONF_ST_DEVICE_ID = "smartthings_device_id"
+# - 실제 병합에 사용할 identifier를 안전한 문자열로 저장 (JSON-safe)
+#   format: "smartthings::<identifier_value>"
+CONF_ST_IDENTIFIER = "smartthings_identifier"
 
-# URLs
-STF_BASE = "https://smartthingsfind.samsung.com"
-URL_GET_CSRF = f"{STF_BASE}/chkLogin.do"
-URL_DEVICE_LIST = f"{STF_BASE}/device/getDeviceList.do"
-URL_REQUEST_OPERATION = f"{STF_BASE}/dm/addOperation.do"
-URL_SET_LAST_DEVICE = f"{STF_BASE}/device/setLastSelect.do"
+# Internal keys stored in hass.data[DOMAIN][entry_id]
+DATA_SESSION = "session"
+DATA_CSRF = "_csrf"
+DATA_DEVICES = "devices"
+DATA_COORDINATOR = "coordinator"
+DATA_KEEPALIVE_CANCEL = "keepalive_cancel"
 
-# SmartThings official integration domain (device merge 목적)
-SMARTTHINGS_DOMAIN = "smartthings"
-
-# Operations
-OP_RING = "RING"
-OP_CHECK_CONNECTION_WITH_LOCATION = "CHECK_CONNECTION_WITH_LOCATION"
-
-# Battery mapping
+# Battery mapping (SmartThings Find sometimes returns discrete levels)
 BATTERY_LEVELS = {
-    "0": 0, "1": 5, "2": 10, "3": 15, "4": 20, "5": 25, "6": 30, "7": 35, "8": 40, "9": 45,
-    "10": 50, "11": 55, "12": 60, "13": 65, "14": 70, "15": 75, "16": 80, "17": 85, "18": 90, "19": 95, "20": 100,
+    "VERY_LOW": 5,
+    "LOW": 15,
+    "MEDIUM": 50,
+    "HIGH": 80,
+    "FULL": 100,
 }
