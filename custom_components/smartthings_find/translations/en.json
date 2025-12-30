@@ -1,29 +1,18 @@
 {
   "config": {
     "step": {
-      "cookie": {
-        "title": "SmartThings Find Login (Manual)",
-        "description": "Log in to smartthingsfind.samsung.com in your browser, then open DevTools → Network → chkLogin.do, and copy **Request Headers → Cookie:** line here."
+      "user": {
+        "title": "SmartThings Find login (manual)",
+        "description": "Log in via browser and paste your Cookie header.\n\n1) Open SmartThings Find: [{stf_url}]({stf_url})\n2) DevTools (F12) → Network\n3) Select the `chkLogin.do` request (refresh if needed)\n4) Copy Request Headers → `Cookie:` (the whole line)\n5) Paste it below",
+        "data": {
+          "jsessionid": "cookie_input"
+        }
       }
     },
     "error": {
-      "invalid_cookie": "Cannot parse the cookie input.",
-      "missing_jsessionid": "JSESSIONID not found. Paste the whole Cookie header from chkLogin.do request.",
-      "auth_failed": "Cookie is not valid. Paste the whole Cookie header from chkLogin.do request."
-    },
-    "abort": {
-      "reauth_successful": "Reauthentication successful."
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "data": {
-          "update_interval": "Update interval (seconds)",
-          "active_mode_smarttags": "Use active mode for SmartTags (may increase battery consumption).",
-          "active_mode_others": "Use active mode for other devices (phones, watches, ...) (high battery consumption)."
-        }
-      }
+      "invalid_cookie": "Invalid cookie format. Paste the full Cookie header line.",
+      "auth_failed": "Authentication failed. Cookie expired or invalid.",
+      "unknown": "Unknown error. Check logs."
     }
   }
 }

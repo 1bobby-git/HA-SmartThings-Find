@@ -13,7 +13,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from .const import (
     DOMAIN,
-    CONF_JSESSIONID,  # legacy key name (kept)
+    CONF_JSESSIONID,  # legacy key name (we store raw Cookie header here)
     CONF_UPDATE_INTERVAL,
     CONF_UPDATE_INTERVAL_DEFAULT,
     CONF_ACTIVE_MODE_SMARTTAGS,
@@ -24,6 +24,8 @@ from .const import (
 from .utils import parse_cookie_header, apply_cookies_to_session, fetch_csrf
 
 _LOGGER = logging.getLogger(__name__)
+
+STF_URL = "https://smartthingsfind.samsung.com/"
 
 
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -43,14 +45,14 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not cookies:
                 errors["base"] = "invalid_cookie"
             else:
-                # Validate credentials immediately by calling chkLogin.do and reading _csrf
                 session = async_create_clientsession(
                     self.hass,
                     cookie_jar=aiohttp.CookieJar(unsafe=True),
                 )
                 try:
                     apply_cookies_to_session(session, cookies)
-                    # temp entry_id for fetch_csrf storage path
+
+                    # validate auth now (chkLogin.do + _csrf)
                     self.hass.data.setdefault(DOMAIN, {})
                     self.hass.data[DOMAIN].setdefault("config_flow_tmp", {})
                     await fetch_csrf(self.hass, session, "config_flow_tmp")
@@ -74,12 +76,16 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     except Exception:
                         pass
 
-        schema = vol.Schema(
-            {
-                vol.Required(CONF_JSESSIONID): str,  # paste full Cookie header here
-            }
+        schema = vol.Schema({vol.Required(CONF_JSESSIONID): str})
+
+        return self.async_show_form(
+            step_id="user",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={
+                "stf_url": STF_URL,
+            },
         )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
     async def async_step_reauth(self, user_input: dict[str, Any] | None = None):
         self._reauth_entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
