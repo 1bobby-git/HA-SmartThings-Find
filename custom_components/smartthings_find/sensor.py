@@ -120,7 +120,7 @@ class SmartThingsFindLastSeenSensor(_Base):
     def native_value(self):
         loc = self._loc()
         used = loc.get("used_loc") or {}
-        return used.get("gps_date")  # datetime (timezone-aware)
+        return used.get("gps_date")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:

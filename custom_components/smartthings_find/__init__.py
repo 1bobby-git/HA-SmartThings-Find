@@ -65,7 +65,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
     )
 
-    # Validate auth and set csrf
     await fetch_csrf(hass, session, entry.entry_id)
 
     devices = await get_devices(hass, session, entry.entry_id)

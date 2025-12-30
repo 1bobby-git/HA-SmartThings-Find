@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 import aiohttp
+from yarl import URL
+
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry
@@ -23,6 +25,11 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 STF_BASE = "https://smartthingsfind.samsung.com"
+STF_BASE_URL = URL(STF_BASE)
+
+# Official SmartThings integration domain (used for device registry merge)
+SMARTTHINGS_DOMAIN = "smartthings"
+
 URL_GET_CSRF = f"{STF_BASE}/chkLogin.do"
 URL_DEVICE_LIST = f"{STF_BASE}/device/getDeviceList.do"
 URL_REQUEST_LOC_UPDATE = f"{STF_BASE}/dm/addOperation.do"
@@ -56,6 +63,7 @@ def parse_cookie_header(cookie_header: str) -> Dict[str, str]:
         if " " in k and k.lower().startswith("cookie "):
             k = k.split(" ", 1)[1].strip()
 
+        # Some cookies can contain illegal key chars for http.cookies
         if not k or not _TOKEN_RE.match(k):
             _LOGGER.debug("Skipping illegal cookie key: %r", k)
             continue
@@ -66,8 +74,10 @@ def parse_cookie_header(cookie_header: str) -> Dict[str, str]:
 
 
 def apply_cookies_to_session(session: aiohttp.ClientSession, cookies: Dict[str, str]) -> None:
+    """Apply cookies dict to aiohttp session cookie jar."""
     if cookies:
-        session.cookie_jar.update_cookies(cookies, response_url=STF_BASE)
+        # aiohttp expects response_url to be a yarl.URL, not str
+        session.cookie_jar.update_cookies(cookies, response_url=STF_BASE_URL)
 
 
 def _looks_like_logout(status: int, body: str) -> bool:
@@ -80,7 +90,7 @@ def _looks_like_logout(status: int, body: str) -> bool:
 
 
 async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> None:
-    """Validate session and fetch CSRF token."""
+    """Validate session and fetch CSRF token from chkLogin.do."""
     async with session.get(URL_GET_CSRF) as response:
         text = await response.text()
 
@@ -89,7 +99,6 @@ async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_
                 f"SmartThings Find auth failed (chkLogin.do status={response.status}, body={text!r})"
             )
 
-        # Samsung returns 200 with body 'fail' when session invalid
         if text.strip() == "fail":
             raise ConfigEntryAuthFailed(
                 "SmartThings Find session invalid/expired (chkLogin.do returned 200 but body='fail')"
@@ -129,9 +138,12 @@ async def _request_text(
     data: Any = None,
     retry_auth_once: bool = True,
 ) -> Tuple[int, str, Dict[str, str]]:
-    """Request wrapper with:
-    401/Logout/fail -> CSRF refresh once -> retry once -> ConfigEntryAuthFailed
+    """Request wrapper:
+    - detect invalid auth: 401/403 or body 'Logout'/'fail'
+    - refresh CSRF and retry once
+    - if still invalid -> ConfigEntryAuthFailed (triggers HA reauth)
     """
+
     async def _do() -> Tuple[int, str, Dict[str, str]]:
         async with session.request(method, url, headers=headers, json=json_payload, data=data) as resp:
             txt = await resp.text()
@@ -143,7 +155,10 @@ async def _request_text(
         if retry_auth_once:
             _LOGGER.warning(
                 "Auth invalid (%s %s) status=%s body=%r -> CSRF refresh + retry once",
-                method, url, status, (txt or "")[:200],
+                method,
+                url,
+                status,
+                (txt or "")[:200],
             )
             await fetch_csrf(hass, session, entry_id)
             status, txt, hdrs = await _do()
@@ -185,6 +200,7 @@ async def _request_json(
 
 
 async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> list:
+    """Retrieve list of devices from STF."""
     csrf = await _ensure_csrf(hass, session, entry_id)
     url = f"{URL_DEVICE_LIST}?_csrf={csrf}"
 
@@ -201,16 +217,29 @@ async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry
 
     devices_data = js.get("deviceList", []) if isinstance(js, dict) else []
     devices = []
+
+    dr = device_registry.async_get(hass)
+
     for device in devices_data:
         device["modelName"] = html.unescape(html.unescape(device.get("modelName", "")))
 
-        identifier = (DOMAIN, device["dvceID"])
-        ha_dev = device_registry.async_get(hass).async_get_device({identifier})
+        dvce_id = device["dvceID"]
+
+        # ✅ 핵심: SmartThings 공식 통합과 동일 device registry 병합을 유도
+        # - 우리쪽 identifier: (smartthings_find, dvceID)
+        # - 공식 smartthings identifier도 (smartthings, dvceID)로 존재한다면 같은 디바이스로 합쳐짐
+        identifiers = {
+            (DOMAIN, dvce_id),
+            (SMARTTHINGS_DOMAIN, dvce_id),
+        }
+
+        ha_dev = dr.async_get_device(identifiers)
         if ha_dev and ha_dev.disabled:
+            _LOGGER.debug("Ignoring disabled device: %r", device["modelName"])
             continue
 
         ha_dev_info = DeviceInfo(
-            identifiers={identifier},
+            identifiers=identifiers,
             manufacturer="Samsung",
             name=device["modelName"],
             model=device.get("modelID"),
@@ -228,6 +257,7 @@ async def get_device_location(
     dev_data: dict,
     entry_id: str,
 ) -> Optional[dict]:
+    """Fetch current device location / operations."""
     dev_id = dev_data["dvceID"]
     dev_name = dev_data.get("modelName", dev_id)
 
@@ -300,7 +330,7 @@ async def get_device_location(
         if op.get("oprnType") not in ("LOCATION", "LASTLOC", "OFFLINE_LOC"):
             continue
 
-        # plain
+        # Plain location
         if "latitude" in op:
             if "extra" not in op or "gpsUtcDt" not in op["extra"]:
                 continue
@@ -309,16 +339,22 @@ async def get_device_location(
             if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
                 continue
 
-            used_loc["latitude"] = float(op.get("latitude")) if op.get("latitude") is not None else None
-            used_loc["longitude"] = float(op.get("longitude")) if op.get("longitude") is not None else None
-            res["location_found"] = (used_loc["latitude"] is not None and used_loc["longitude"] is not None)
+            try:
+                used_loc["latitude"] = float(op["latitude"])
+                used_loc["longitude"] = float(op["longitude"])
+            except Exception:
+                continue
 
-            used_loc["gps_accuracy"] = calc_gps_accuracy(op.get("horizontalUncertainty"), op.get("verticalUncertainty"))
+            used_loc["gps_accuracy"] = calc_gps_accuracy(
+                op.get("horizontalUncertainty"),
+                op.get("verticalUncertainty"),
+            )
             used_loc["gps_date"] = utc_date
             used_op = op
+            res["location_found"] = True
             continue
 
-        # encLocation
+        # encLocation (may be encrypted)
         if "encLocation" in op:
             loc = op["encLocation"]
             if isinstance(loc, dict) and loc.get("encrypted"):
@@ -330,13 +366,22 @@ async def get_device_location(
             if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
                 continue
 
-            used_loc["latitude"] = float(loc.get("latitude")) if loc.get("latitude") is not None else None
-            used_loc["longitude"] = float(loc.get("longitude")) if loc.get("longitude") is not None else None
-            res["location_found"] = (used_loc["latitude"] is not None and used_loc["longitude"] is not None)
+            if "latitude" not in loc or "longitude" not in loc:
+                continue
 
-            used_loc["gps_accuracy"] = calc_gps_accuracy(loc.get("horizontalUncertainty"), loc.get("verticalUncertainty"))
+            try:
+                used_loc["latitude"] = float(loc["latitude"])
+                used_loc["longitude"] = float(loc["longitude"])
+            except Exception:
+                continue
+
+            used_loc["gps_accuracy"] = calc_gps_accuracy(
+                loc.get("horizontalUncertainty"),
+                loc.get("verticalUncertainty"),
+            )
             used_loc["gps_date"] = utc_date
             used_op = op
+            res["location_found"] = True
 
     if used_op:
         res["used_op"] = used_op
@@ -346,6 +391,7 @@ async def get_device_location(
 
 
 def calc_gps_accuracy(hu: Any, vu: Any) -> Optional[float]:
+    """Combine horizontal/vertical uncertainties to a single accuracy value in meters."""
     try:
         if hu is None or vu is None:
             return None
@@ -355,11 +401,12 @@ def calc_gps_accuracy(hu: Any, vu: Any) -> Optional[float]:
 
 
 def parse_stf_date(datestr: str) -> datetime:
-    # STF format: YYYYmmddHHMMSS
+    """Parse STF date format: YYYYmmddHHMMSS (UTC)."""
     return datetime.strptime(datestr, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
 
 
 def get_battery_level(dev_name: str, ops: list) -> Optional[int]:
+    """Extract battery level from CHECK_CONNECTION operation."""
     for op in ops or []:
         if op.get("oprnType") == "CHECK_CONNECTION" and "battery" in op:
             batt_raw = op["battery"]

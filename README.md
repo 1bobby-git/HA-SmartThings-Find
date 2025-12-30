@@ -1,4 +1,4 @@
-# HA-SmartThings-Find (Cookie Auth) — v0.3.4
+# HA-SmartThings-Find
 
 Samsung **SmartThings Find**(비공식/역공학) 기능을 Home Assistant에서 사용하기 위한 커스텀 통합입니다.  
 원본 프로젝트 **Vedeneb/HA-SmartThings-Find**를 기반으로 하며, **삼성 로그인 흐름 변경으로 QR 로그인 엔드포인트가 사라진(또는 404로 깨진) 환경**에 맞춰 **브라우저 쿠키(Cookie header) 수동 입력 방식**으로 인증하도록 포크/수정한 버전입니다.
@@ -91,22 +91,17 @@ Home Assistant → 통합 → SmartThings Find → **구성(Configure)**
 - 해결(권장):
   1) `/config/custom_components/smartthings_find/` 폴더를 통째로 삭제  
   2) Home Assistant 재시작  
-  3) HACS에서 재설치(또는 Redownload)  
+  3) HACS에서 재설치(또는 Redownload)
 
----
-
-## Notes / Limitations
-
-- SmartTag “Ring”은 주변 갤럭시 기기(폰/태블릿)가 BLE로 전달하는 구조라, 주변 연결 기기가 없으면 실패할 수 있습니다.  
-  (Cookie auth 포크에서는 **Refresh 버튼**으로 “즉시 갱신” 기능을 우선 제공합니다.)
-- 기기 종류에 따라 위치/배터리 정보가 항상 오지 않을 수 있습니다.
-- 비공식 통합이라 삼성 측 변경에 취약합니다.
+### 4) `Unexpected error validating cookie auth: 'str' object has no attribute 'raw_host'`
+- aiohttp 버전에 따라 `cookie_jar.update_cookies(..., response_url=...)`가 **URL 객체**를 요구합니다.
+- 해결: `utils.py`의 `apply_cookies_to_session()`에서 `yarl.URL("https://smartthingsfind.samsung.com")`를 사용하도록 수정하세요. (아래 “Fix” 섹션 참고)
 
 ---
 
 ## Debug (Logs)
 
-`configuration.yaml`에 추가 후 재시작:
+아래 YAML을 `configuration.yaml`에 추가 후 재시작:
 
 ```yaml
 logger:

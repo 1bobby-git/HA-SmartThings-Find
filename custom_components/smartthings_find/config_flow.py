@@ -28,7 +28,6 @@ _LOGGER = logging.getLogger(__name__)
 
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
-    # HA 버전에 따라 CLOUD_POLLING 상수가 없을 수 있음 → CLOUD_POLL 사용
     CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLL
 
     def __init__(self) -> None:
@@ -51,7 +50,6 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 try:
                     apply_cookies_to_session(session, cookies)
 
-                    # Validate immediately
                     self.hass.data.setdefault(DOMAIN, {})
                     self.hass.data[DOMAIN].setdefault("config_flow_tmp", {})
                     await fetch_csrf(self.hass, session, "config_flow_tmp")

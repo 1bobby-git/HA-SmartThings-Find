@@ -1,8 +1,8 @@
 {
   "domain": "smartthings_find",
-  "name": "SmartThings Find (Cookie Auth)",
+  "name": "SmartThings Find",
   "after_dependencies": ["http"],
-  "version": "0.3.5",
+  "version": "0.3.7",
   "documentation": "https://github.com/1bobby-git/HA-SmartThings-Find",
   "issue_tracker": "https://github.com/1bobby-git/HA-SmartThings-Find/issues",
   "integration_type": "hub",
