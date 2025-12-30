@@ -42,7 +42,7 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            # ✅ Keep-alive + CSRF refresh on every cycle
+            # ✅ keep-alive + CSRF refresh
             self.csrf = await fetch_csrf(self.hass, self.session)
 
             results: dict[str, Any] = {}
@@ -58,6 +58,7 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 if res is not None:
                     results[dev_data["dvceID"]] = res
+
             return results
 
         except ConfigEntryAuthFailed:

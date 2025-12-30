@@ -2,16 +2,26 @@
   "config": {
     "step": {
       "user": {
-        "title": "SmartThings Find manual login",
-        "description": "1) Open: [smartthingsfind.samsung.com](https://smartthingsfind.samsung.com)\n2) Login in your browser, then DevTools(F12) → Network\n3) Select `chkLogin.do` request (refresh if needed)\n4) Copy Request Headers → **Cookie:** (the whole line)\n5) Paste it below",
+        "title": "SmartThings Find",
+        "description": "1) Login at https://smartthingsfind.samsung.com\n2) DevTools(F12) → Network\n3) Open chkLogin.do (refresh if needed)\n4) Copy Request Headers → Cookie: line\n5) Paste below",
         "data": {
-          "cookie_input": "Full Cookie header (e.g. Cookie: a=b; c=d)"
+          "cookie_input": "Cookie header"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authentication required",
+        "description": "Session expired. Paste a new Cookie header to re-authenticate.",
+        "data": {
+          "cookie_input": "Cookie header"
         }
       }
     },
     "error": {
-      "invalid_auth": "Authentication failed. Cookie expired or invalid.",
-      "unknown": "Unknown error."
+      "invalid_auth": "Authentication failed. Please verify the Cookie header.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "reauth_successful": "Re-authentication successful"
     }
   },
   "options": {

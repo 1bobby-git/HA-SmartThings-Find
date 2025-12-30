@@ -18,7 +18,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     entities: list[SmartThingsFindTracker] = []
     for dev in devices:
-        entities.append(SmartThingsFindTracker(coordinator, entry, dev))
+        entities.append(SmartThingsFindTracker(coordinator, dev))
     async_add_entities(entities)
 
 
@@ -27,9 +27,8 @@ class SmartThingsFindTracker(CoordinatorEntity, TrackerEntity):
     _attr_source_type = SourceType.GPS
     _attr_has_entity_name = True
 
-    def __init__(self, coordinator, entry: ConfigEntry, dev: dict[str, Any]) -> None:
+    def __init__(self, coordinator, dev: dict[str, Any]) -> None:
         super().__init__(coordinator)
-        self.entry = entry
         self.dev = dev
         self._dvce_id = dev["data"]["dvceID"]
 

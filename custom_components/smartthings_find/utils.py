@@ -32,7 +32,6 @@ _LOGGER = logging.getLogger(__name__)
 
 _COOKIE_PREFIX_RE = re.compile(r"^\s*cookie\s*:\s*", re.IGNORECASE)
 
-# 브라우저와 비슷한 헤더로 세션 수명 짧아지는 케이스 완화
 DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -70,16 +69,17 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
         k = k.strip()
         v = v.strip()
 
-        # aiohttp/http.cookies는 공백 들어간 키에서 CookieError
+        # prevent CookieError (illegal key with spaces)
         if not k or re.search(r"\s", k):
             continue
 
         cookies[k] = v
+
     return cookies
 
 
 def apply_cookies_to_session(session: aiohttp.ClientSession, cookies: dict[str, str]) -> None:
-    """response_url must be yarl.URL (prevents raw_host error)."""
+    """response_url must be yarl.URL -> prevents 'raw_host' error."""
     session.cookie_jar.update_cookies(cookies, response_url=URL(STF_BASE))
 
 
@@ -89,12 +89,7 @@ async def make_isolated_session(hass: HomeAssistant) -> aiohttp.ClientSession:
     Prevents cookie contamination from HA global session.
     """
     jar = aiohttp.CookieJar()
-    session = async_create_clientsession(
-        hass,
-        headers=DEFAULT_HEADERS,
-        cookie_jar=jar,
-    )
-    return session
+    return async_create_clientsession(hass, headers=DEFAULT_HEADERS, cookie_jar=jar)
 
 
 async def make_session_with_cookie(hass: HomeAssistant, cookie_header: str) -> aiohttp.ClientSession:
@@ -103,6 +98,7 @@ async def make_session_with_cookie(hass: HomeAssistant, cookie_header: str) -> a
     if not cookies:
         await session.close()
         raise ConfigEntryAuthFailed("missing_cookie")
+
     apply_cookies_to_session(session, cookies)
     return session
 
@@ -110,7 +106,11 @@ async def make_session_with_cookie(hass: HomeAssistant, cookie_header: str) -> a
 async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, *_args: Any) -> str:
     """
     Keep-alive + CSRF refresh.
-    ✅ Backward compatible: old code may call fetch_csrf(hass, session, entry_id)
+    chkLogin.do:
+      - success: header "_csrf" exists
+      - invalid: body 'fail' or 'Logout'
+
+    ✅ backward compatible: old code may call fetch_csrf(hass, session, entry_id)
     """
     async with session.get(URL_GET_CSRF) as resp:
         body = (await resp.text()).strip()
@@ -139,7 +139,7 @@ def _build_device_info(hass: HomeAssistant, dev: dict[str, Any]) -> DeviceInfo:
     st_dev = dr.async_get_device({identifier_st})
 
     identifiers = {identifier_ours}
-    # SmartThings official device가 존재하면 같은 디바이스로 merge되게 추가
+    # If SmartThings official device exists, add its identifier to merge under one device
     if st_dev is not None:
         identifiers.add(identifier_st)
 
@@ -229,7 +229,9 @@ async def send_operation(
     async with session.post(url, json=payload) as resp:
         txt = (await resp.text()).strip()
         if resp.status >= 400:
-            _LOGGER.warning("Operation %s failed for %s (%s): %s", operation, dvce_id, resp.status, txt[:200])
+            _LOGGER.warning(
+                "Operation %s failed for %s (%s): %s", operation, dvce_id, resp.status, txt[:200]
+            )
 
 
 async def get_device_location(
@@ -249,7 +251,6 @@ async def get_device_location(
         is_tag = dev_data.get("deviceTypeCode") == "TAG"
         active = (is_tag and active_tags) or ((not is_tag) and active_others)
 
-        # Active mode: trigger refresh
         if active:
             await send_operation(session, csrf, dev_id, usr_id, "CHECK_CONNECTION_WITH_LOCATION")
 
