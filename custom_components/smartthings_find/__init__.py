@@ -20,7 +20,6 @@ from .const import (
     DATA_SESSION,
     DATA_COORDINATOR,
     DATA_DEVICES,
-    DATA_KEEPALIVE_CANCEL,
 )
 from .coordinator import SmartThingsFindCoordinator
 from .utils import (
@@ -45,7 +44,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN].setdefault(entry.entry_id, {})
 
-    cookie_line = entry.data.get(CONF_COOKIE, "")
+    cookie_line = (entry.data.get(CONF_COOKIE) or "").strip()
     if not cookie_line:
         raise ConfigEntryAuthFailed("missing_cookie")
 
@@ -65,17 +64,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         {
             CONF_ACTIVE_MODE_SMARTTAGS: active_smarttags,
             CONF_ACTIVE_MODE_OTHERS: active_others,
-            # ✅ 0.3.16 mapping option value (string)
             CONF_ST_IDENTIFIER: st_identifier,
         }
     )
 
+    # Validate session + store csrf
     await fetch_csrf(hass, session, entry.entry_id)
 
+    # Load devices (this also builds DeviceInfo identifiers used for device merge)
     devices = await get_devices(hass, session, entry.entry_id)
 
     update_interval = entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
 
+    # ✅ Now coordinator accepts entry kw safely (0.3.16+)
     coordinator = SmartThingsFindCoordinator(
         hass=hass,
         entry=entry,
@@ -83,6 +84,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         devices=devices,
         update_interval_s=update_interval,
     )
+
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id].update(
@@ -102,9 +104,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if data:
-        cancel = data.get(DATA_KEEPALIVE_CANCEL)
-        if cancel:
-            cancel()
+        coordinator = data.get(DATA_COORDINATOR)
+        if coordinator:
+            await coordinator.async_shutdown()
 
         session = data.get(DATA_SESSION)
         if session:
