@@ -69,7 +69,7 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
         k = k.strip()
         v = v.strip()
 
-        # prevent CookieError (illegal key with spaces)
+        # aiohttp/http.cookies: key에 공백 있으면 CookieError
         if not k or re.search(r"\s", k):
             continue
 
@@ -79,15 +79,12 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
 
 
 def apply_cookies_to_session(session: aiohttp.ClientSession, cookies: dict[str, str]) -> None:
-    """response_url must be yarl.URL -> prevents 'raw_host' error."""
+    """response_url must be yarl.URL (prevents raw_host error)."""
     session.cookie_jar.update_cookies(cookies, response_url=URL(STF_BASE))
 
 
 async def make_isolated_session(hass: HomeAssistant) -> aiohttp.ClientSession:
-    """
-    Create integration-dedicated aiohttp session (isolated cookie jar).
-    Prevents cookie contamination from HA global session.
-    """
+    """Integration-dedicated aiohttp session (isolated cookie jar)."""
     jar = aiohttp.CookieJar()
     return async_create_clientsession(hass, headers=DEFAULT_HEADERS, cookie_jar=jar)
 
@@ -98,9 +95,13 @@ async def make_session_with_cookie(hass: HomeAssistant, cookie_header: str) -> a
     if not cookies:
         await session.close()
         raise ConfigEntryAuthFailed("missing_cookie")
-
     apply_cookies_to_session(session, cookies)
     return session
+
+
+# ✅ backward-compatible alias (구버전 config_flow.py가 make_session을 import해도 동작)
+async def make_session(hass: HomeAssistant, cookie_header: str) -> aiohttp.ClientSession:
+    return await make_session_with_cookie(hass, cookie_header)
 
 
 async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, *_args: Any) -> str:
@@ -109,7 +110,6 @@ async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, *_args
     chkLogin.do:
       - success: header "_csrf" exists
       - invalid: body 'fail' or 'Logout'
-
     ✅ backward compatible: old code may call fetch_csrf(hass, session, entry_id)
     """
     async with session.get(URL_GET_CSRF) as resp:
@@ -139,7 +139,6 @@ def _build_device_info(hass: HomeAssistant, dev: dict[str, Any]) -> DeviceInfo:
     st_dev = dr.async_get_device({identifier_st})
 
     identifiers = {identifier_ours}
-    # If SmartThings official device exists, add its identifier to merge under one device
     if st_dev is not None:
         identifiers.add(identifier_st)
 

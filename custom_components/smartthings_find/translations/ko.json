@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "1) https://smartthingsfind.samsung.com 에 로그인\n2) DevTools(F12) → Network\n3) chkLogin.do 선택(필요시 새로고침)\n4) Request Headers → Cookie: 전체 줄 복사\n5) 아래에 붙여넣기",
+        "description": "1) https://smartthingsfind.samsung.com 로그인\n2) DevTools(F12) → Network\n3) chkLogin.do 선택(필요시 새로고침)\n4) Request Headers → Cookie: 전체 줄 복사\n5) 아래에 붙여넣기",
         "data": {
           "cookie_input": "Cookie header"
         }

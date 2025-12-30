@@ -52,7 +52,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             cookie_header = user_input.get(CONF_COOKIE_INPUT, "")
             try:
                 session = await make_session_with_cookie(self.hass, cookie_header)
-                await fetch_csrf(self.hass, session)  # ✅ 2 args (utils is also backward compatible)
+                await fetch_csrf(self.hass, session)
                 await session.close()
 
                 if reauth and self._reauth_entry:

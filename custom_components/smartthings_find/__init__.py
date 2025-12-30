@@ -33,11 +33,28 @@ def _get_cookie_from_entry(entry: ConfigEntry) -> str | None:
     cookie = entry.data.get(CONF_COOKIE_INPUT)
     if cookie:
         return cookie
+
     # legacy support
     cookie = entry.data.get(CONF_JSESSIONID) or entry.data.get("jsessionid")
     if cookie:
         return cookie
+
     return None
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate old data keys to new key."""
+    data = dict(entry.data)
+
+    if CONF_COOKIE_INPUT not in data:
+        legacy = data.get(CONF_JSESSIONID) or data.get("jsessionid")
+        if legacy:
+            data[CONF_COOKIE_INPUT] = legacy
+
+    if data != dict(entry.data):
+        hass.config_entries.async_update_entry(entry, data=data)
+
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

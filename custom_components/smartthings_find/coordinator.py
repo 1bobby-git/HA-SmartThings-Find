@@ -42,7 +42,7 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            # ✅ keep-alive + CSRF refresh
+            # keep-alive + CSRF refresh on every cycle
             self.csrf = await fetch_csrf(self.hass, self.session)
 
             results: dict[str, Any] = {}
