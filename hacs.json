@@ -1,5 +1,5 @@
 {
-  "name": "HA-SmartThings-Find",
+  "name": "SmartThings Find",
   "content_in_root": false,
   "domains": [
     "smartthings_find"

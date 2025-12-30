@@ -15,6 +15,7 @@ from .utils import fetch_csrf, get_device_location
 
 _LOGGER = logging.getLogger(__name__)
 
+
 class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def __init__(
         self,
@@ -41,8 +42,8 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            if not self.csrf:
-                self.csrf = await fetch_csrf(self.hass, self.session)
+            # ✅ Keep-alive + CSRF refresh on every cycle
+            self.csrf = await fetch_csrf(self.hass, self.session)
 
             results: dict[str, Any] = {}
             for dev in self.devices:
@@ -60,7 +61,6 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return results
 
         except ConfigEntryAuthFailed:
-            # HA가 reauth 유도하도록 그대로 올림
             raise
         except Exception as err:
             raise UpdateFailed(f"Error fetching {DOMAIN} data: {err}") from err

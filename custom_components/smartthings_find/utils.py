@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 import html
 import json
 import logging
 import re
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -16,7 +14,7 @@ from yarl import URL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.entity import DeviceInfo
 
 from .const import (
@@ -28,47 +26,32 @@ from .const import (
     URL_REQUEST_OPERATION,
     URL_SET_LAST_DEVICE,
     BATTERY_LEVELS,
-    CONF_ACTIVE_MODE_OTHERS,
-    CONF_ACTIVE_MODE_SMARTTAGS,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-# --- Simple SVGs (ST Find 스타일 "느낌") ---
-# device_tracker / battery 만 커스텀, 나머지는 mdi로 둠
-_STF_TRACKER_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-<defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1">
-<stop offset="0" stop-color="#111827"/><stop offset="1" stop-color="#0b1220"/></linearGradient></defs>
-<path d="M32 2c-10.5 0-19 8.5-19 19 0 16.5 19 41 19 41s19-24.5 19-41C51 10.5 42.5 2 32 2z" fill="url(#g)"/>
-<circle cx="32" cy="21" r="12" fill="#ffffff"/>
-<rect x="26.5" y="13" width="11" height="16" rx="2" fill="#60a5fa"/>
-<circle cx="32" cy="27" r="1.2" fill="#1f2937"/>
-</svg>"""
-
-_STF_BATTERY_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-<rect x="14" y="18" width="34" height="28" rx="6" fill="#111827"/>
-<rect x="48" y="26" width="4" height="12" rx="2" fill="#111827"/>
-<rect x="18" y="22" width="26" height="20" rx="4" fill="#22c55e"/>
-</svg>"""
-
-def svg_data_uri(svg: str) -> str:
-    # base64 없이 utf8로도 동작하지만, 환경에 따라 인코딩 이슈가 있어 간단 escape
-    svg = svg.replace("\n", "").replace("\r", "")
-    return "data:image/svg+xml;utf8," + aiohttp.helpers.quote(svg, safe=":/%#[]@!$&'()*+,;=?")
-
-STF_TRACKER_PICTURE = svg_data_uri(_STF_TRACKER_SVG)
-STF_BATTERY_PICTURE = svg_data_uri(_STF_BATTERY_SVG)
-
-# --- Cookie handling ---
-
 _COOKIE_PREFIX_RE = re.compile(r"^\s*cookie\s*:\s*", re.IGNORECASE)
+
+# 브라우저와 비슷한 헤더로 세션 수명 짧아지는 케이스 완화
+DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.6",
+    "Referer": STF_BASE + "/",
+    "Origin": STF_BASE,
+}
+
 
 def parse_cookie_header(raw: str) -> dict[str, str]:
     """
-    Accepts either:
+    Accepts:
       - "Cookie: a=b; c=d"
       - "a=b; c=d"
-    Returns dict suitable for aiohttp cookie_jar.update_cookies()
+    Returns dict for aiohttp cookie_jar.update_cookies()
     """
     if not raw:
         return {}
@@ -86,48 +69,66 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
         k, v = part.split("=", 1)
         k = k.strip()
         v = v.strip()
-        # aiohttp/cookies는 key에 공백 등 들어가면 CookieError 발생
+
+        # aiohttp/http.cookies는 공백 들어간 키에서 CookieError
         if not k or re.search(r"\s", k):
             continue
+
         cookies[k] = v
     return cookies
 
+
 def apply_cookies_to_session(session: aiohttp.ClientSession, cookies: dict[str, str]) -> None:
-    # response_url은 반드시 yarl.URL 이어야 함 (raw_host 오류 방지)
+    """response_url must be yarl.URL (prevents raw_host error)."""
     session.cookie_jar.update_cookies(cookies, response_url=URL(STF_BASE))
 
-async def make_session(hass: HomeAssistant, cookie_header: str) -> aiohttp.ClientSession:
-    session = async_get_clientsession(hass)
+
+async def make_isolated_session(hass: HomeAssistant) -> aiohttp.ClientSession:
+    """
+    Create integration-dedicated aiohttp session (isolated cookie jar).
+    Prevents cookie contamination from HA global session.
+    """
+    jar = aiohttp.CookieJar()
+    session = async_create_clientsession(
+        hass,
+        headers=DEFAULT_HEADERS,
+        cookie_jar=jar,
+    )
+    return session
+
+
+async def make_session_with_cookie(hass: HomeAssistant, cookie_header: str) -> aiohttp.ClientSession:
+    session = await make_isolated_session(hass)
     cookies = parse_cookie_header(cookie_header)
     if not cookies:
+        await session.close()
         raise ConfigEntryAuthFailed("missing_cookie")
     apply_cookies_to_session(session, cookies)
     return session
 
-# --- Auth / CSRF ---
 
-async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession) -> str:
+async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, *_args: Any) -> str:
     """
-    chkLogin.do:
-      - success: header "_csrf" 존재
-      - invalid: body 'fail' or 'Logout'
+    Keep-alive + CSRF refresh.
+    ✅ Backward compatible: old code may call fetch_csrf(hass, session, entry_id)
     """
     async with session.get(URL_GET_CSRF) as resp:
-        txt = (await resp.text()).strip()
+        body = (await resp.text()).strip()
+
         if resp.status != 200:
-            raise ConfigEntryAuthFailed(f"SmartThings Find auth failed ({resp.status})")
+            raise ConfigEntryAuthFailed(f"SmartThings Find auth failed (status={resp.status})")
 
         csrf = resp.headers.get("_csrf")
         if csrf:
             return csrf
 
-        # 200인데 fail이 오는 케이스가 실제로 있음
-        if txt.lower() in ("fail", "logout"):
-            raise ConfigEntryAuthFailed(f"SmartThings Find session invalid/expired (chkLogin.do body='{txt}')")
+        if body.lower() in ("fail", "logout"):
+            raise ConfigEntryAuthFailed(
+                f"SmartThings Find session invalid/expired (chkLogin.do body='{body}')"
+            )
 
         raise ConfigEntryAuthFailed("CSRF token not found in chkLogin.do response")
 
-# --- Devices ---
 
 def _build_device_info(hass: HomeAssistant, dev: dict[str, Any]) -> DeviceInfo:
     dvce_id = dev["dvceID"]
@@ -138,7 +139,7 @@ def _build_device_info(hass: HomeAssistant, dev: dict[str, Any]) -> DeviceInfo:
     st_dev = dr.async_get_device({identifier_st})
 
     identifiers = {identifier_ours}
-    # SmartThings 공식 통합이 같은 device_id를 쓰고 있으면, 같은 Device로 merge되도록 추가
+    # SmartThings official device가 존재하면 같은 디바이스로 merge되게 추가
     if st_dev is not None:
         identifiers.add(identifier_st)
 
@@ -153,6 +154,7 @@ def _build_device_info(hass: HomeAssistant, dev: dict[str, Any]) -> DeviceInfo:
         configuration_url=STF_BASE,
     )
 
+
 async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, csrf: str) -> list[dict[str, Any]]:
     url = f"{URL_DEVICE_LIST}?_csrf={csrf}"
     async with session.post(url, headers={"Accept": "application/json"}, data={}) as resp:
@@ -164,28 +166,25 @@ async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, csrf:
 
         payload = await resp.json()
         devices_data = payload.get("deviceList", []) or []
-        results: list[dict[str, Any]] = []
 
+        results: list[dict[str, Any]] = []
         dr = device_registry.async_get(hass)
 
         for dev in devices_data:
-            # disabled device skip
             identifier = (DOMAIN, dev["dvceID"])
             ha_dev = dr.async_get_device({identifier})
             if ha_dev and ha_dev.disabled:
                 continue
 
             dev["modelName"] = html.unescape(html.unescape(dev.get("modelName") or "Unknown"))
-            results.append(
-                {"data": dev, "ha_dev_info": _build_device_info(hass, dev)}
-            )
+            results.append({"data": dev, "ha_dev_info": _build_device_info(hass, dev)})
 
         return results
 
-# --- Location & operations ---
 
 def parse_stf_date(datestr: str) -> datetime:
     return datetime.strptime(datestr, "%Y%m%d%H%M%S").replace(tzinfo=pytz.UTC)
+
 
 def calc_gps_accuracy(hu: float | None, vu: float | None) -> float | None:
     try:
@@ -196,6 +195,7 @@ def calc_gps_accuracy(hu: float | None, vu: float | None) -> float | None:
         return round((hu_f**2 + vu_f**2) ** 0.5, 1)
     except Exception:
         return None
+
 
 def get_battery_level(ops: list[dict[str, Any]]) -> int | None:
     for op in ops or []:
@@ -210,20 +210,6 @@ def get_battery_level(ops: list[dict[str, Any]]) -> int | None:
                 return None
     return None
 
-def get_sub_location(ops: list[dict[str, Any]], sub_device_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    if not ops or not sub_device_name:
-        return {}, {}
-    for op in ops:
-        enc = op.get("encLocation") or {}
-        if sub_device_name in enc:
-            loc = enc[sub_device_name]
-            return op, {
-                "latitude": float(loc["latitude"]),
-                "longitude": float(loc["longitude"]),
-                "gps_accuracy": calc_gps_accuracy(loc.get("horizontalUncertainty"), loc.get("verticalUncertainty")),
-                "gps_date": parse_stf_date(loc["gpsUtcDt"]),
-            }
-    return {}, {}
 
 async def send_operation(
     session: aiohttp.ClientSession,
@@ -241,10 +227,10 @@ async def send_operation(
         payload["status"] = status
 
     async with session.post(url, json=payload) as resp:
-        # 사이트도 성공/실패를 엄격히 다루지 않는 경우가 있어 로그만 남김
         txt = (await resp.text()).strip()
         if resp.status >= 400:
             _LOGGER.warning("Operation %s failed for %s (%s): %s", operation, dvce_id, resp.status, txt[:200])
+
 
 async def get_device_location(
     hass: HomeAssistant,
@@ -263,21 +249,18 @@ async def get_device_location(
         is_tag = dev_data.get("deviceTypeCode") == "TAG"
         active = (is_tag and active_tags) or ((not is_tag) and active_others)
 
-        # Active mode: request location refresh
+        # Active mode: trigger refresh
         if active:
             await send_operation(session, csrf, dev_id, usr_id, "CHECK_CONNECTION_WITH_LOCATION")
 
-        # setLastSelect -> returns operations + locations
         url = f"{URL_SET_LAST_DEVICE}?_csrf={csrf}"
         set_last_payload = {"dvceId": dev_id, "removeDevice": []}
 
         async with session.post(url, json=set_last_payload, headers={"Accept": "application/json"}) as resp:
             txt = (await resp.text()).strip()
 
-            # 세션 만료 패턴
             if resp.status in (401, 403) or txt == "Logout":
                 if retry_on_unauth:
-                    # 1회: csrf 재획득 후 재시도
                     _LOGGER.warning("[%s] Session invalid, retrying once with new CSRF...", dev_name)
                     new_csrf = await fetch_csrf(hass, session)
                     return await get_device_location(
@@ -300,29 +283,26 @@ async def get_device_location(
             if t not in ("LOCATION", "LASTLOC", "OFFLINE_LOC"):
                 continue
 
-            # latitude/longitude directly
             if "latitude" in op or "longitude" in op:
                 extra = op.get("extra") or {}
-                if "gpsUtcDt" in extra:
-                    utc_date = parse_stf_date(extra["gpsUtcDt"])
-                else:
+                if "gpsUtcDt" not in extra:
                     continue
 
-                # choose newest
+                utc_date = parse_stf_date(extra["gpsUtcDt"])
                 if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
                     continue
 
                 used_loc["latitude"] = float(op.get("latitude")) if op.get("latitude") is not None else None
                 used_loc["longitude"] = float(op.get("longitude")) if op.get("longitude") is not None else None
-                used_loc["gps_accuracy"] = calc_gps_accuracy(op.get("horizontalUncertainty"), op.get("verticalUncertainty"))
+                used_loc["gps_accuracy"] = calc_gps_accuracy(
+                    op.get("horizontalUncertainty"), op.get("verticalUncertainty")
+                )
                 used_loc["gps_date"] = utc_date
                 used_op = op
                 continue
 
-            # encLocation block
             if "encLocation" in op:
                 loc = op["encLocation"]
-                # encrypted -> skip
                 if isinstance(loc, dict) and loc.get("encrypted") is True:
                     continue
                 if "gpsUtcDt" not in loc:
@@ -334,11 +314,13 @@ async def get_device_location(
 
                 used_loc["latitude"] = float(loc.get("latitude")) if loc.get("latitude") is not None else None
                 used_loc["longitude"] = float(loc.get("longitude")) if loc.get("longitude") is not None else None
-                used_loc["gps_accuracy"] = calc_gps_accuracy(loc.get("horizontalUncertainty"), loc.get("verticalUncertainty"))
+                used_loc["gps_accuracy"] = calc_gps_accuracy(
+                    loc.get("horizontalUncertainty"), loc.get("verticalUncertainty")
+                )
                 used_loc["gps_date"] = utc_date
                 used_op = op
 
-        result = {
+        return {
             "dev_id": dev_id,
             "dev_name": dev_name,
             "usr_id": usr_id,
@@ -349,15 +331,9 @@ async def get_device_location(
             "battery_level": get_battery_level(ops),
             "fetched_at": datetime.now(tz=pytz.UTC),
         }
-        return result
 
     except ConfigEntryAuthFailed:
         raise
     except Exception as e:
         _LOGGER.exception("[%s] Exception while fetching location: %s", dev_name, e)
         return None
-
-@dataclass
-class STFDevice:
-    data: dict[str, Any]
-    ha_dev_info: DeviceInfo
