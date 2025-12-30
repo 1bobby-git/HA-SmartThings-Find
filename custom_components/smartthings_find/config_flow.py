@@ -28,7 +28,8 @@ _LOGGER = logging.getLogger(__name__)
 
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
-    CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLLING
+    # HA 버전에 따라 CLOUD_POLLING 상수가 없을 수 있음 → CLOUD_POLL 사용
+    CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLL
 
     def __init__(self) -> None:
         self._reauth_entry: ConfigEntry | None = None
@@ -79,7 +80,6 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=schema,
             errors=errors,
-            description_placeholders={},  # text is in translations (with clickable markdown)
         )
 
     async def async_step_reauth(self, user_input: dict[str, Any] | None = None):
