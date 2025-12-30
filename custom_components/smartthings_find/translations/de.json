@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "cookie": {
+        "title": "SmartThings Find Login (Manuell)",
+        "description": "Melde dich im Browser bei smartthingsfind.samsung.com an, öffne dann DevTools → Network → chkLogin.do und kopiere **Request Headers → Cookie:** hier hinein."
+      }
+    },
+    "error": {
+      "invalid_cookie": "Cookie-Eingabe kann nicht gelesen werden.",
+      "missing_jsessionid": "JSESSIONID nicht gefunden. Bitte den gesamten Cookie-Header aus chkLogin.do einfügen.",
+      "auth_failed": "Cookie ist ungültig. Bitte den gesamten Cookie-Header aus chkLogin.do einfügen."
+    },
+    "abort": {
+      "reauth_successful": "Reauthentifizierung erfolgreich."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "update_interval": "Aktualisierungsintervall (Sekunden)",
+          "active_mode_smarttags": "Aktiven Modus für SmartTags verwenden (kann Akkuverbrauch erhöhen).",
+          "active_mode_others": "Aktiven Modus für andere Geräte verwenden (hoher Akkuverbrauch)."
+        }
+      }
+    }
+  }
+}

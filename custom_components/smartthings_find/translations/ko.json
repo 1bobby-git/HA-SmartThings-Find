@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "cookie": {
+        "title": "SmartThings Find 로그인(수동)",
+        "description": "브라우저에서 smartthingsfind.samsung.com 로그인 후, 개발자도구(Network) → chkLogin.do 요청의 **Request Headers → Cookie:** 줄 전체를 복사해 붙여넣으세요."
+      }
+    },
+    "error": {
+      "invalid_cookie": "Cookie 입력을 해석할 수 없습니다.",
+      "missing_jsessionid": "JSESSIONID를 찾지 못했습니다. chkLogin.do 요청의 Cookie 헤더 전체를 붙여넣으세요.",
+      "auth_failed": "쿠키가 유효하지 않습니다. chkLogin.do 요청의 Cookie 헤더 전체를 붙여넣으세요."
+    },
+    "abort": {
+      "reauth_successful": "재인증이 완료되었습니다."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "update_interval": "업데이트 간격(초)",
+          "active_mode_smarttags": "SmartTag에 액티브 모드 사용(배터리 소모 증가 가능).",
+          "active_mode_others": "기타 기기(폰/워치 등)에 액티브 모드 사용(배터리 소모 큼)."
+        }
+      }
+    }
+  }
+}

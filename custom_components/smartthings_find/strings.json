@@ -1,0 +1,18 @@
+{
+  "config": {
+    "step": {
+      "cookie": {
+        "title": "SmartThings Find Login (Manual)",
+        "description": "Log in to smartthingsfind.samsung.com in your browser, then open DevTools → Network → chkLogin.do, and copy **Request Headers → Cookie:** line here."
+      }
+    },
+    "error": {
+      "invalid_cookie": "Cannot parse the cookie input.",
+      "missing_jsessionid": "JSESSIONID not found. Paste the whole Cookie header from chkLogin.do request.",
+      "auth_failed": "Cookie is not valid. Paste the whole Cookie header from chkLogin.do request."
+    },
+    "abort": {
+      "reauth_successful": "Reauthentication successful."
+    }
+  }
+}
