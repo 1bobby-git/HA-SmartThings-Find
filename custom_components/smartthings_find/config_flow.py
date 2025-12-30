@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-import json
-import logging
-import re
 from typing import Any
-
+import logging
 import voluptuous as vol
+import aiohttp
+
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigFlowResult, OptionsFlowWithConfigEntry
 from homeassistant.core import callback
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
+from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from .const import (
     DOMAIN,
-    CONF_COOKIES,
-    CONF_COOKIE_HEADER,
+    CONF_JSESSIONID,  # legacy key name (kept)
     CONF_UPDATE_INTERVAL,
     CONF_UPDATE_INTERVAL_DEFAULT,
     CONF_ACTIVE_MODE_SMARTTAGS,
@@ -21,121 +21,107 @@ from .const import (
     CONF_ACTIVE_MODE_OTHERS,
     CONF_ACTIVE_MODE_OTHERS_DEFAULT,
 )
-from .utils import normalize_cookies, validate_cookies
+from .utils import parse_cookie_header, apply_cookies_to_session, fetch_csrf
 
 _LOGGER = logging.getLogger(__name__)
-
-STEP_COOKIE_SCHEMA = vol.Schema({vol.Required("cookie_input"): str})
-
-
-def _parse_cookie_input(raw: str) -> tuple[dict[str, str], str]:
-    s = (raw or "").strip()
-    if not s:
-        return {}, ""
-
-    for line in s.splitlines():
-        if line.lower().startswith("cookie:"):
-            s = line.split(":", 1)[1].strip()
-            break
-
-    if s.startswith("{"):
-        obj = json.loads(s)
-        if not isinstance(obj, dict):
-            return {}, ""
-        cookies = {str(k).strip(): str(v).strip() for k, v in obj.items() if str(k).strip()}
-        hdr = "; ".join([f"{k}={v}" for k, v in cookies.items()])
-        return cookies, hdr
-
-    m = re.search(r"\bJSESSIONID\b[\s\t]+([A-Za-z0-9._~-]+)", s)
-    if m:
-        v = m.group(1).strip()
-        return {"JSESSIONID": v}, f"JSESSIONID={v}"
-
-    cookies: dict[str, str] = {}
-    for part in s.split(";"):
-        part = part.strip()
-        if not part or "=" not in part:
-            continue
-        k, v = part.split("=", 1)
-        cookies[k.strip()] = v.strip()
-
-    hdr = "; ".join([f"{k}={v}" for k, v in cookies.items()])
-    return cookies, hdr
 
 
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
+    CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLLING
 
     def __init__(self) -> None:
-        self._stf_reauth_entry_id: str | None = None
+        self._reauth_entry: ConfigEntry | None = None
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        return await self.async_step_cookie(user_input)
-
-    async def async_step_reauth(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        self._stf_reauth_entry_id = self.context.get("entry_id")
-        return await self.async_step_cookie(user_input)
-
-    async def async_step_cookie(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            raw = user_input.get("cookie_input", "")
-            try:
-                cookies, hdr = _parse_cookie_input(raw)
-            except Exception:
-                cookies, hdr = {}, ""
+            cookie_header = user_input.get(CONF_JSESSIONID, "").strip()
+            cookies = parse_cookie_header(cookie_header)
+
+            if not cookies:
                 errors["base"] = "invalid_cookie"
+            else:
+                # Validate credentials immediately by calling chkLogin.do and reading _csrf
+                session = async_create_clientsession(
+                    self.hass,
+                    cookie_jar=aiohttp.CookieJar(unsafe=True),
+                )
+                try:
+                    apply_cookies_to_session(session, cookies)
+                    # temp entry_id for fetch_csrf storage path
+                    self.hass.data.setdefault(DOMAIN, {})
+                    self.hass.data[DOMAIN].setdefault("config_flow_tmp", {})
+                    await fetch_csrf(self.hass, session, "config_flow_tmp")
 
-            cookies = normalize_cookies(cookies)
+                    data = {CONF_JSESSIONID: cookie_header}
 
-            if "JSESSIONID" not in cookies:
-                errors["base"] = "missing_jsessionid"
-
-            if not errors:
-                ok = await validate_cookies(self.hass, cookies)
-                if not ok:
-                    errors["base"] = "auth_failed"
-                else:
-                    data = {CONF_COOKIES: cookies, CONF_COOKIE_HEADER: hdr}
-
-                    if self._stf_reauth_entry_id:
-                        entry = self.hass.config_entries.async_get_entry(self._stf_reauth_entry_id)
-                        if entry:
-                            self.hass.config_entries.async_update_entry(entry, data={**entry.data, **data})
-                            return self.async_abort(reason="reauth_successful")
+                    if self._reauth_entry:
+                        return self.async_update_reload_and_abort(self._reauth_entry, data=data)
 
                     return self.async_create_entry(title="SmartThings Find", data=data)
 
-        return self.async_show_form(step_id="cookie", data_schema=STEP_COOKIE_SCHEMA, errors=errors)
+                except ConfigEntryAuthFailed as e:
+                    _LOGGER.warning("Auth validation failed: %s", e)
+                    errors["base"] = "auth_failed"
+                except Exception as e:
+                    _LOGGER.exception("Unexpected error validating cookie auth: %s", e)
+                    errors["base"] = "unknown"
+                finally:
+                    try:
+                        await session.close()
+                    except Exception:
+                        pass
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_JSESSIONID): str,  # paste full Cookie header here
+            }
+        )
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+
+    async def async_step_reauth(self, user_input: dict[str, Any] | None = None):
+        self._reauth_entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
+        return await self.async_step_reauth_confirm(user_input)
+
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None):
+        return await self.async_step_user(user_input)
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry):
         return SmartThingsFindOptionsFlowHandler(config_entry)
 
 
-class SmartThingsFindOptionsFlowHandler(OptionsFlowWithConfigEntry):
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        if user_input is not None:
-            res = self.async_create_entry(title="", data=user_input)
-            self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
-            return res
+class SmartThingsFindOptionsFlowHandler(config_entries.OptionsFlow):
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        self.config_entry = config_entry
 
-        data_schema = vol.Schema(
+    async def async_step_init(self, user_input: dict[str, Any] | None = None):
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        schema = vol.Schema(
             {
                 vol.Optional(
                     CONF_UPDATE_INTERVAL,
-                    default=self.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
+                    default=self.config_entry.options.get(
+                        CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT
+                    ),
                 ): vol.All(vol.Coerce(int), vol.Clamp(min=30)),
                 vol.Optional(
                     CONF_ACTIVE_MODE_SMARTTAGS,
-                    default=self.options.get(CONF_ACTIVE_MODE_SMARTTAGS, CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT),
+                    default=self.config_entry.options.get(
+                        CONF_ACTIVE_MODE_SMARTTAGS, CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT
+                    ),
                 ): bool,
                 vol.Optional(
                     CONF_ACTIVE_MODE_OTHERS,
-                    default=self.options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT),
+                    default=self.config_entry.options.get(
+                        CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT
+                    ),
                 ): bool,
             }
         )
-        return self.async_show_form(step_id="init", data_schema=data_schema)
+        return self.async_show_form(step_id="init", data_schema=schema)
