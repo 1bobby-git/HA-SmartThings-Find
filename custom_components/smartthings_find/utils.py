@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import html
 import json
 import logging
@@ -25,6 +24,13 @@ from .const import (
     CONF_ACTIVE_MODE_SMARTTAGS,
     CONF_ACTIVE_MODE_OTHERS,
     CONF_ST_IDENTIFIER,
+    OP_RING,
+    OP_CHECK_CONNECTION_WITH_LOCATION,
+    OP_CHECK_CONNECTION,
+    OP_LOCK,
+    OP_ERASE,
+    OP_TRACK,
+    OP_EXTEND_BATTERY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -35,22 +41,9 @@ URL_DEVICE_LIST = STF_BASE / "device/getDeviceList.do"
 URL_SET_LAST_DEVICE = STF_BASE / "device/setLastSelect.do"
 URL_ADD_OPERATION = STF_BASE / "dm/addOperation.do"  # requires ?_csrf=
 
-# Operations (reverse engineered / website behavior)
-OP_RING = "RING"
-OP_CHECK_CONNECTION_WITH_LOCATION = "CHECK_CONNECTION_WITH_LOCATION"
-OP_LOCATION = "LOCATION"
-OP_CHECK_CONNECTION = "CHECK_CONNECTION"
-
-# Phone extra buttons (best-effort)
-OP_LOCK = "LOCK"
-OP_ERASE = "ERASE"
-OP_TRACK = "TRACKING"
-OP_EXTEND_BATTERY = "EXTEND_BATTERY"
-
 COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
-# ✅ JSON-safe smartthings identifier encoding
-# We store options as: "smartthings::<value>"
+# JSON-safe smartthings identifier encoding
 _ST_IDENT_PREFIX = "smartthings::"
 
 
@@ -97,19 +90,14 @@ def parse_cookie_header(cookie_header_line: str) -> dict[str, str]:
 
 
 def apply_cookies_to_session(session: aiohttp.ClientSession, cookies: dict[str, str]) -> None:
-    """
-    aiohttp requires response_url to be yarl.URL, not str.
-    """
+    """aiohttp requires response_url to be yarl.URL, not str."""
     if not cookies:
         return
     session.cookie_jar.update_cookies(cookies, response_url=STF_BASE)
 
 
 def make_session(hass: HomeAssistant) -> aiohttp.ClientSession:
-    """
-    Dedicated session (not HA global shared session) to avoid polluting other integrations.
-    CookieJar unsafe=True allows cookies for IPs / relaxed rules.
-    """
+    """Dedicated session (avoid polluting HA shared session)."""
     jar = aiohttp.CookieJar(unsafe=True)
     return async_create_clientsession(
         hass,
@@ -124,14 +112,14 @@ async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_
     If entry_id is given, also stores it in hass.data[DOMAIN][entry_id]["_csrf"].
     """
     async with session.get(URL_CHK_LOGIN) as resp:
-        text = await resp.text()
+        text = (await resp.text()).strip()
         csrf = resp.headers.get("_csrf")
 
         _LOGGER.debug("chkLogin.do status=%s csrf=%s body=%s", resp.status, bool(csrf), text[:200])
 
-        if resp.status == 401 or text.strip() in ("fail", "Logout"):
+        if resp.status == 401 or text in ("fail", "Logout"):
             raise ConfigEntryAuthFailed(
-                f"SmartThings Find session invalid/expired (chkLogin.do returned {resp.status} but body='{text.strip()}')"
+                f"SmartThings Find session invalid/expired (chkLogin.do returned {resp.status} but body='{text}')"
             )
 
         if resp.status != 200 or not csrf:
@@ -146,7 +134,7 @@ async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_
 
 
 # =========================
-# ✅ 0.3.16 SmartThings mapping helpers
+# 0.3.16+ SmartThings mapping helpers
 # =========================
 
 def list_smartthings_devices_for_ui(hass: HomeAssistant) -> list[tuple[str, str]]:
@@ -173,7 +161,6 @@ def list_smartthings_devices_for_ui(hass: HomeAssistant) -> list[tuple[str, str]
 
 
 def _encode_smartthings_identifier(ident: tuple[str, str]) -> str:
-    # ident example: ("smartthings", "<deviceId>")
     if not ident or len(ident) != 2:
         return ""
     if ident[0] != "smartthings":
@@ -183,8 +170,10 @@ def _encode_smartthings_identifier(ident: tuple[str, str]) -> str:
 
 def _decode_smartthings_identifier(value: Any) -> tuple[str, str] | None:
     """
-    Accepts stored option value which can be str or list/tuple (older attempts).
-    Returns ("smartthings", "...") or None.
+    Accepts stored option value:
+      - "smartthings::<id>"
+      - "<id>" (tolerate)
+      - ("smartthings", "<id>") legacy
     """
     if isinstance(value, (list, tuple)) and len(value) == 2:
         if value[0] == "smartthings" and isinstance(value[1], str):
@@ -194,7 +183,6 @@ def _decode_smartthings_identifier(value: Any) -> tuple[str, str] | None:
     if isinstance(value, str):
         if value.startswith(_ST_IDENT_PREFIX):
             return ("smartthings", value[len(_ST_IDENT_PREFIX):])
-        # tolerate raw identifier value
         if value and "::" not in value:
             return ("smartthings", value)
     return None
@@ -202,25 +190,20 @@ def _decode_smartthings_identifier(value: Any) -> tuple[str, str] | None:
 
 def get_smartthings_identifier_value_by_device_id(hass: HomeAssistant, device_id: str) -> str:
     """
-    device_registry DeviceEntry.id로부터 smartthings identifier를 찾아 JSON-safe string으로 반환.
-    returns "smartthings::<identifier_value>" or ""
+    device_registry DeviceEntry.id -> first smartthings identifier -> encoded string
     """
     dr = device_registry.async_get(hass)
     dev = dr.devices.get(device_id)
     if not dev or not dev.identifiers:
         return ""
-
     st_idents = [i for i in dev.identifiers if i[0] == "smartthings"]
     if not st_idents:
         return ""
-
     return _encode_smartthings_identifier(st_idents[0])
 
 
 def _find_matching_smartthings_identifiers_by_name(hass: HomeAssistant, name: str) -> set[tuple[str, str]]:
-    """
-    Best-effort fallback (only used if user did not select mapping option).
-    """
+    """Best-effort fallback if user didn't pick mapping option."""
     dr = device_registry.async_get(hass)
     name_norm = (name or "").strip().lower()
 
@@ -237,17 +220,15 @@ def _find_matching_smartthings_identifiers_by_name(hass: HomeAssistant, name: st
 
 
 async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> list[dict[str, Any]]:
-    """
-    device/getDeviceList.do requires csrf in query string.
-    """
+    """device/getDeviceList.do requires csrf in query string."""
     csrf = hass.data[DOMAIN][entry_id]["_csrf"]
     url = URL_DEVICE_LIST.update_query({"_csrf": csrf})
 
     async with session.post(url, headers={"Accept": "application/json"}, data={}) as resp:
         if resp.status != 200:
-            body = await resp.text()
+            body = (await resp.text()).strip()
             _LOGGER.error("Failed to retrieve devices [%s]: %s", resp.status, body[:200])
-            if resp.status in (401, 403) or body.strip() in ("Logout", "fail"):
+            if resp.status in (401, 403) or body in ("Logout", "fail"):
                 raise ConfigEntryAuthFailed("Session invalid while fetching devices")
             return []
 
@@ -257,7 +238,6 @@ async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry
 
         dr = device_registry.async_get(hass)
 
-        # ✅ exact mapping from options (preferred)
         opt_ident_raw = hass.data.get(DOMAIN, {}).get(entry_id, {}).get(CONF_ST_IDENTIFIER)
         opt_ident = _decode_smartthings_identifier(opt_ident_raw)
 
@@ -268,14 +248,11 @@ async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry
             model_name = d.get("modelName") or str(dvce_id) or "SmartThings Find device"
 
             our_identifier = (DOMAIN, str(dvce_id))
-
             identifiers: set[tuple[str, str]] = {our_identifier}
 
-            # ✅ If user selected SmartThings device mapping -> add it (100% deterministic merge)
             if opt_ident:
                 identifiers.add(opt_ident)
             else:
-                # fallback only when not mapped
                 identifiers |= _find_matching_smartthings_identifiers_by_name(hass, model_name)
 
             ha_dev = dr.async_get_device({our_identifier})
@@ -423,12 +400,10 @@ async def get_device_location(
             for op in ops:
                 if op.get("oprnType") in ("LOCATION", "LASTLOC", "OFFLINE_LOC"):
                     if "latitude" in op or "longitude" in op:
-                        utc_date = None
                         extra = op.get("extra") or {}
-                        if "gpsUtcDt" in extra:
-                            utc_date = parse_stf_date(extra["gpsUtcDt"])
-                        else:
+                        if "gpsUtcDt" not in extra:
                             continue
+                        utc_date = parse_stf_date(extra["gpsUtcDt"])
 
                         if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
                             continue
@@ -475,13 +450,7 @@ async def get_device_location(
         return None
 
 
-async def ring_device(
-    hass: HomeAssistant,
-    session: aiohttp.ClientSession,
-    entry_id: str,
-    dev_data: dict[str, Any],
-    start: bool,
-) -> None:
+async def ring_device(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str, dev_data: dict[str, Any], start: bool) -> None:
     payload = {
         "dvceId": dev_data.get("dvceID"),
         "operation": OP_RING,
@@ -492,13 +461,7 @@ async def ring_device(
     await send_operation(hass, session, entry_id, payload)
 
 
-async def phone_action(
-    hass: HomeAssistant,
-    session: aiohttp.ClientSession,
-    entry_id: str,
-    dev_data: dict[str, Any],
-    op: str,
-) -> None:
+async def phone_action(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str, dev_data: dict[str, Any], op: str) -> None:
     payload = {
         "dvceId": dev_data.get("dvceID"),
         "operation": op,

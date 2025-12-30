@@ -11,11 +11,9 @@ CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT = False
 CONF_ACTIVE_MODE_OTHERS = "active_mode_others"
 CONF_ACTIVE_MODE_OTHERS_DEFAULT = False
 
-# ✅ 0.3.16: SmartThings official device mapping (Options)
-# - device_registry id 선택(드롭다운)
+# SmartThings official device mapping (Options)
 CONF_ST_DEVICE_ID = "smartthings_device_id"
-# - 실제 병합에 사용할 identifier를 안전한 문자열로 저장 (JSON-safe)
-#   format: "smartthings::<identifier_value>"
+# JSON-safe string: "smartthings::<identifier_value>"
 CONF_ST_IDENTIFIER = "smartthings_identifier"
 
 # Internal keys stored in hass.data[DOMAIN][entry_id]
@@ -33,3 +31,16 @@ BATTERY_LEVELS = {
     "HIGH": 80,
     "FULL": 100,
 }
+
+# =========================
+# ✅ SmartThings Find Operations (single source of truth)
+# =========================
+OP_RING = "RING"
+OP_CHECK_CONNECTION_WITH_LOCATION = "CHECK_CONNECTION_WITH_LOCATION"
+OP_CHECK_CONNECTION = "CHECK_CONNECTION"
+
+# Phone / non-tag actions (best-effort; Samsung can change backend anytime)
+OP_LOCK = "LOCK"
+OP_ERASE = "ERASE"
+OP_TRACK = "TRACKING"
+OP_EXTEND_BATTERY = "EXTEND_BATTERY"
