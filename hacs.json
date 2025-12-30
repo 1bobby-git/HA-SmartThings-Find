@@ -1,5 +1,5 @@
 {
-  "name": "HA-SmartThings-Find (Cookie Auth)",
+  "name": "HA-SmartThings-Find",
   "content_in_root": false,
   "domains": [
     "smartthings_find"

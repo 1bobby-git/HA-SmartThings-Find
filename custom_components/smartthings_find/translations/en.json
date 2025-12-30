@@ -2,17 +2,28 @@
   "config": {
     "step": {
       "user": {
-        "title": "SmartThings Find login (manual)",
-        "description": "1) Open: [smartthingsfind.samsung.com](https://smartthingsfind.samsung.com/)\n2) Log in in your browser, then open DevTools (F12) → Network\n3) Select the `chkLogin.do` request (refresh if needed)\n4) Copy Request Headers → **Cookie:** (the whole line)\n5) Paste it below",
+        "title": "SmartThings Find manual login",
+        "description": "1) Open: [smartthingsfind.samsung.com](https://smartthingsfind.samsung.com)\n2) Login in your browser, then DevTools(F12) → Network\n3) Select `chkLogin.do` request (refresh if needed)\n4) Copy Request Headers → **Cookie:** (the whole line)\n5) Paste it below",
         "data": {
-          "jsessionid": "Full Cookie header (e.g. Cookie: a=b; c=d)"
+          "cookie_input": "Full Cookie header (e.g. Cookie: a=b; c=d)"
         }
       }
     },
     "error": {
-      "invalid_cookie": "Invalid cookie format. Paste the full Request Headers → Cookie: line.",
-      "auth_failed": "Authentication failed. Cookie expired or invalid.",
-      "unknown": "Unknown error. Check logs."
+      "invalid_auth": "Authentication failed. Cookie expired or invalid.",
+      "unknown": "Unknown error."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "update_interval": "Update interval (seconds)",
+          "active_mode_smarttags": "Active mode for SmartTags",
+          "active_mode_others": "Active mode for other devices"
+        }
+      }
     }
   }
 }

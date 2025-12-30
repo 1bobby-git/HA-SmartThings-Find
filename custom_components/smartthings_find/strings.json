@@ -1,18 +1,30 @@
 {
+  "title": "SmartThings Find",
   "config": {
     "step": {
-      "cookie": {
-        "title": "SmartThings Find Login (Manual)",
-        "description": "Log in to smartthingsfind.samsung.com in your browser, then open DevTools → Network → chkLogin.do, and copy **Request Headers → Cookie:** line here."
+      "user": {
+        "title": "SmartThings Find 로그인(수동)",
+        "description": "1. 사이트 열기: [smartthingsfind.samsung.com](https://smartthingsfind.samsung.com)\n2. 브라우저 로그인 후 개발자도구(F12) → Network\n3. `chkLogin.do` 요청 선택(필요 시 새로고침)\n4. Request Headers → **Cookie:** 줄 전체 복사\n5. 아래 입력창에 그대로 붙여넣기",
+        "data": {
+          "cookie_input": "Cookie 헤더 전체(예: Cookie: a=b; c=d)"
+        }
       }
     },
     "error": {
-      "invalid_cookie": "Cannot parse the cookie input.",
-      "missing_jsessionid": "JSESSIONID not found. Paste the whole Cookie header from chkLogin.do request.",
-      "auth_failed": "Cookie is not valid. Paste the whole Cookie header from chkLogin.do request."
-    },
-    "abort": {
-      "reauth_successful": "Reauthentication successful."
+      "invalid_auth": "인증 실패. Cookie가 만료되었거나 잘못되었습니다.",
+      "unknown": "알 수 없는 오류가 발생했습니다."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "옵션",
+        "data": {
+          "update_interval": "업데이트 간격(초)",
+          "active_mode_smarttags": "SmartTag Active mode",
+          "active_mode_others": "기타 기기 Active mode"
+        }
+      }
     }
   }
 }

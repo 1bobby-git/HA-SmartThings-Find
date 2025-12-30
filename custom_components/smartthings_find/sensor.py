@@ -1,155 +1,72 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from datetime import datetime
+from typing import Any
 
-from homeassistant.components.sensor import (
-    SensorEntity,
-    SensorDeviceClass,
-    SensorStateClass,
-)
-from homeassistant.const import PERCENTAGE, UnitOfLength
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+from homeassistant.const import PERCENTAGE
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .utils import get_battery_level
-from . import SmartThingsFindCoordinator
-
-
-def _get_colored_icon_url(dev_data: dict) -> Optional[str]:
-    icons = dev_data.get("icons")
-    if isinstance(icons, dict):
-        url = icons.get("coloredIcon") or icons.get("icon") or icons.get("monoIcon")
-        if isinstance(url, str) and url.startswith("http"):
-            return url
-    return None
-
+from .utils import STF_BATTERY_PICTURE
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
-    coordinator: SmartThingsFindCoordinator = data["coordinator"]
+    coordinator = data["coordinator"]
     devices = data["devices"]
 
-    entities = []
-    for d in devices:
-        dev = d["data"]
-        dvce_id = dev["dvceID"]
-        entities.append(SmartThingsFindBatterySensor(coordinator, entry.entry_id, dvce_id))
-        entities.append(SmartThingsFindAccuracySensor(coordinator, entry.entry_id, dvce_id))
-        entities.append(SmartThingsFindLastSeenSensor(coordinator, entry.entry_id, dvce_id))
+    entities: list[SensorEntity] = []
+    for dev in devices:
+        entities.append(SmartThingsFindBatterySensor(coordinator, entry, dev))
+        entities.append(SmartThingsFindLastUpdateSensor(coordinator, entry, dev))
     async_add_entities(entities)
 
+class SmartThingsFindBatterySensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_entity_picture = STF_BATTERY_PICTURE
 
-class _Base(CoordinatorEntity, SensorEntity):
-    def __init__(self, coordinator: SmartThingsFindCoordinator, entry_id: str, dvce_id: str) -> None:
+    def __init__(self, coordinator, entry: ConfigEntry, dev: dict[str, Any]) -> None:
         super().__init__(coordinator)
-        self._entry_id = entry_id
+        self.dev = dev
+        dvce_id = dev["data"]["dvceID"]
         self._dvce_id = dvce_id
 
-        # ✅ 모든 센서가 "디바이스 그림 아이콘" 사용 (원본 느낌 유지)
-        dev = self.coordinator.devices_by_id.get(self._dvce_id, {}).get("data", {})
-        self._attr_entity_picture = _get_colored_icon_url(dev)
-
-    @property
-    def device_info(self):
-        d = self.coordinator.devices_by_id.get(self._dvce_id)
-        return d["ha_dev_info"] if d else None
-
-    def _dev_name(self) -> str:
-        d = self.coordinator.devices_by_id.get(self._dvce_id)
-        return (d["data"].get("modelName") if d else None) or f"STF {self._dvce_id}"
-
-    def _loc(self) -> dict:
-        return (self.coordinator.data or {}).get(self._dvce_id) or {}
-
-
-class SmartThingsFindBatterySensor(_Base):
-    _attr_device_class = SensorDeviceClass.BATTERY
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_icon = "mdi:battery"  # fallback only (entity_picture가 없을 때)
-
-    @property
-    def unique_id(self) -> str:
-        return f"{self._entry_id}_{self._dvce_id}_battery"
-
-    @property
-    def name(self) -> str:
-        return f"{self._dev_name()} Battery"
+        self._attr_unique_id = f"{dvce_id}_battery"
+        self._attr_name = "Battery"
+        self._attr_device_info = dev["ha_dev_info"]
 
     @property
     def native_value(self) -> int | None:
-        loc = self._loc()
-        ops = loc.get("ops") or []
-        return get_battery_level(self._dev_name(), ops)
+        res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
+        if not res:
+            return None
+        return res.get("battery_level")
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        loc = self._loc()
-        return {
-            "update_success": loc.get("update_success"),
-            "location_found": loc.get("location_found"),
-        }
-
-
-class SmartThingsFindAccuracySensor(_Base):
-    _attr_device_class = SensorDeviceClass.DISTANCE
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfLength.METERS
-    _attr_icon = "mdi:crosshairs-gps"  # fallback only
-
-    @property
-    def unique_id(self) -> str:
-        return f"{self._entry_id}_{self._dvce_id}_accuracy"
-
-    @property
-    def name(self) -> str:
-        return f"{self._dev_name()} GPS Accuracy"
-
-    @property
-    def native_value(self) -> float | None:
-        loc = self._loc()
-        used = loc.get("used_loc") or {}
-        return used.get("gps_accuracy")
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        loc = self._loc()
-        used = loc.get("used_loc") or {}
-        dt = used.get("gps_date")
-        return {
-            "gps_date": dt.isoformat() if dt else None,
-            "update_success": loc.get("update_success"),
-        }
-
-
-class SmartThingsFindLastSeenSensor(_Base):
+class SmartThingsFindLastUpdateSensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_icon = "mdi:clock-outline"  # fallback only
+
+    def __init__(self, coordinator, entry: ConfigEntry, dev: dict[str, Any]) -> None:
+        super().__init__(coordinator)
+        self.dev = dev
+        dvce_id = dev["data"]["dvceID"]
+        self._dvce_id = dvce_id
+
+        self._attr_unique_id = f"{dvce_id}_last_update"
+        self._attr_name = "Last update"
+        self._attr_device_info = dev["ha_dev_info"]
+        self._attr_icon = "mdi:clock-outline"
 
     @property
-    def unique_id(self) -> str:
-        return f"{self._entry_id}_{self._dvce_id}_last_seen"
-
-    @property
-    def name(self) -> str:
-        return f"{self._dev_name()} Last Seen"
-
-    @property
-    def native_value(self):
-        loc = self._loc()
-        used = loc.get("used_loc") or {}
-        return used.get("gps_date")
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        loc = self._loc()
-        used = loc.get("used_loc") or {}
-        return {
-            "latitude": used.get("latitude"),
-            "longitude": used.get("longitude"),
-            "gps_accuracy": used.get("gps_accuracy"),
-            "update_success": loc.get("update_success"),
-            "location_found": loc.get("location_found"),
-        }
+    def native_value(self) -> datetime | None:
+        res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
+        if not res:
+            return None
+        # gps_date가 있으면 그걸, 없으면 fetched_at
+        loc = res.get("used_loc") or {}
+        return loc.get("gps_date") or res.get("fetched_at")
