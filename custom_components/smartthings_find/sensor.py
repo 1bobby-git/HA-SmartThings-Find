@@ -1,47 +1,138 @@
-import logging
+from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
+import logging
+from typing import Any
+
+from homeassistant.components.sensor import SensorEntity
+from homeassistant.const import PERCENTAGE, UnitOfLength
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .utils import get_battery_level
+from . import SmartThingsFindCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
-) -> None:
-    devices = hass.data[DOMAIN][entry.entry_id]["devices"]
-    coordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-    entities = [DeviceBatterySensor(hass, coordinator, device) for device in devices]
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
+    data = hass.data[DOMAIN][entry.entry_id]
+    coordinator: SmartThingsFindCoordinator = data["coordinator"]
+    devices = data["devices"]
+
+    entities = []
+    for d in devices:
+        dev = d["data"]
+        dvce_id = dev["dvceID"]
+        entities.append(SmartThingsFindBatterySensor(coordinator, entry.entry_id, dvce_id))
+        entities.append(SmartThingsFindAccuracySensor(coordinator, entry.entry_id, dvce_id))
+        entities.append(SmartThingsFindLastSeenSensor(coordinator, entry.entry_id, dvce_id))
     async_add_entities(entities)
 
 
-class DeviceBatterySensor(SensorEntity):
-    def __init__(self, hass: HomeAssistant, coordinator, device):
-        self.coordinator = coordinator
-        self._attr_unique_id = f"stf_device_battery_{device['data']['dvceID']}"
-        self._attr_name = f"{device['data']['modelName']} Battery"
-        self.hass = hass
-        self.device = device["data"]
-        self.device_id = device["data"]["dvceID"]
-        self._attr_device_info = device["ha_dev_info"]
-        self._attr_device_class = SensorDeviceClass.BATTERY
-        self._attr_state_class = SensorStateClass.MEASUREMENT
+class _Base(CoordinatorEntity, SensorEntity):
+    def __init__(self, coordinator: SmartThingsFindCoordinator, entry_id: str, dvce_id: str) -> None:
+        super().__init__(coordinator)
+        self._entry_id = entry_id
+        self._dvce_id = dvce_id
 
     @property
-    def available(self) -> bool:
-        data = self.coordinator.data.get(self.device_id, {}) or {}
-        return bool(data) and bool(data.get("update_success"))
+    def device_info(self):
+        d = self.coordinator.devices_by_id.get(self._dvce_id)
+        return d["ha_dev_info"] if d else None
+
+    def _dev_name(self) -> str:
+        d = self.coordinator.devices_by_id.get(self._dvce_id)
+        if not d:
+            return f"STF {self._dvce_id}"
+        return d["data"].get("modelName") or f"STF {self._dvce_id}"
+
+    def _loc(self) -> dict:
+        return (self.coordinator.data or {}).get(self._dvce_id) or {}
+
+
+class SmartThingsFindBatterySensor(_Base):
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry_id}_{self._dvce_id}_battery"
 
     @property
-    def unit_of_measurement(self) -> str:
-        return "%"
+    def name(self) -> str:
+        return f"{self._dev_name()} Battery"
 
     @property
-    def native_value(self):
-        ops = (self.coordinator.data.get(self.device_id, {}) or {}).get("ops", [])
-        return get_battery_level(self.name, ops)
+    def native_unit_of_measurement(self) -> str:
+        return PERCENTAGE
+
+    @property
+    def native_value(self) -> int | None:
+        loc = self._loc()
+        ops = loc.get("ops") or []
+        return get_battery_level(self._dev_name(), ops)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        loc = self._loc()
+        return {
+            "update_success": loc.get("update_success"),
+            "location_found": loc.get("location_found"),
+        }
+
+
+class SmartThingsFindAccuracySensor(_Base):
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry_id}_{self._dvce_id}_accuracy"
+
+    @property
+    def name(self) -> str:
+        return f"{self._dev_name()} GPS Accuracy"
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        return UnitOfLength.METERS
+
+    @property
+    def native_value(self) -> float | None:
+        loc = self._loc()
+        used = loc.get("used_loc") or {}
+        return used.get("gps_accuracy")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        loc = self._loc()
+        used = loc.get("used_loc") or {}
+        return {
+            "gps_date": used.get("gps_date").isoformat() if used.get("gps_date") else None,
+            "update_success": loc.get("update_success"),
+        }
+
+
+class SmartThingsFindLastSeenSensor(_Base):
+    @property
+    def unique_id(self) -> str:
+        return f"{self._entry_id}_{self._dvce_id}_last_seen"
+
+    @property
+    def name(self) -> str:
+        return f"{self._dev_name()} Last Seen"
+
+    @property
+    def native_value(self) -> str | None:
+        loc = self._loc()
+        used = loc.get("used_loc") or {}
+        dt = used.get("gps_date")
+        return dt.isoformat() if dt else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        loc = self._loc()
+        used = loc.get("used_loc") or {}
+        return {
+            "latitude": used.get("latitude"),
+            "longitude": used.get("longitude"),
+            "gps_accuracy": used.get("gps_accuracy"),
+            "update_success": loc.get("update_success"),
+            "location_found": loc.get("location_found"),
+        }

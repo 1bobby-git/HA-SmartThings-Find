@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 import logging
-import voluptuous as vol
 import aiohttp
+import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -13,7 +13,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from .const import (
     DOMAIN,
-    CONF_JSESSIONID,  # legacy key name (we store raw Cookie header here)
+    CONF_JSESSIONID,
     CONF_UPDATE_INTERVAL,
     CONF_UPDATE_INTERVAL_DEFAULT,
     CONF_ACTIVE_MODE_SMARTTAGS,
@@ -24,8 +24,6 @@ from .const import (
 from .utils import parse_cookie_header, apply_cookies_to_session, fetch_csrf
 
 _LOGGER = logging.getLogger(__name__)
-
-STF_URL = "https://smartthingsfind.samsung.com/"
 
 
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -39,7 +37,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            cookie_header = user_input.get(CONF_JSESSIONID, "").strip()
+            cookie_header = (user_input.get(CONF_JSESSIONID) or "").strip()
             cookies = parse_cookie_header(cookie_header)
 
             if not cookies:
@@ -51,8 +49,6 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 try:
                     apply_cookies_to_session(session, cookies)
-
-                    # validate auth now (chkLogin.do + _csrf)
                     self.hass.data.setdefault(DOMAIN, {})
                     self.hass.data[DOMAIN].setdefault("config_flow_tmp", {})
                     await fetch_csrf(self.hass, session, "config_flow_tmp")
@@ -82,9 +78,6 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=schema,
             errors=errors,
-            description_placeholders={
-                "stf_url": STF_URL,
-            },
         )
 
     async def async_step_reauth(self, user_input: dict[str, Any] | None = None):

@@ -1,12 +1,9 @@
-import asyncio
 import base64
 import html
 import json
 import logging
-import random
 import re
-import string
-from datetime import datetime, timedelta
+from datetime import datetime
 from io import BytesIO
 from typing import Any, Dict, Optional, Tuple
 
@@ -33,31 +30,18 @@ URL_REQUEST_LOC_UPDATE = f"{STF_BASE}/dm/addOperation.do"
 URL_SET_LAST_DEVICE = f"{STF_BASE}/device/setLastSelect.do"
 
 
-# ---------------------------
-# Cookie helpers
-# ---------------------------
-
 _TOKEN_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 
 def parse_cookie_header(cookie_header: str) -> Dict[str, str]:
-    """Parse a raw Cookie header line into a dict safe for aiohttp CookieJar.
-
-    Accepts:
-      - "Cookie: a=b; c=d"
-      - "a=b; c=d"
-      - Multi-line pasted values (we normalize to ';')
-      - Weird "cookie sa_trace=..." (we fix by stripping leading 'cookie ' token)
-    """
+    """Parse raw 'Cookie:' header line (or pasted cookie string) into {name: value} dict."""
     if not cookie_header:
         return {}
 
     s = cookie_header.strip()
-    # Remove leading header label if present
     if s.lower().startswith("cookie:"):
         s = s.split(":", 1)[1].strip()
 
-    # Some browsers copy as multiple lines; normalize
     s = s.replace("\r", ";").replace("\n", ";")
 
     cookies: Dict[str, str] = {}
@@ -69,13 +53,12 @@ def parse_cookie_header(cookie_header: str) -> Dict[str, str]:
         k = k.strip()
         v = v.strip()
 
-        # Fix common bad paste: "cookie sa_trace=...."
+        # handle bad pastes like "cookie sa_trace=..."
         if " " in k and k.lower().startswith("cookie "):
             k = k.split(" ", 1)[1].strip()
 
         if not k or not _TOKEN_RE.match(k):
-            # Skip illegal cookie names to avoid http.cookies.CookieError
-            _LOGGER.debug("Skipping illegal cookie key from header: %r", k)
+            _LOGGER.debug("Skipping illegal cookie key: %r", k)
             continue
 
         cookies[k] = v
@@ -84,15 +67,9 @@ def parse_cookie_header(cookie_header: str) -> Dict[str, str]:
 
 
 def apply_cookies_to_session(session: aiohttp.ClientSession, cookies: Dict[str, str]) -> None:
-    """Apply cookies to a session jar scoped for STF_BASE."""
-    if not cookies:
-        return
-    session.cookie_jar.update_cookies(cookies, response_url=STF_BASE)
+    if cookies:
+        session.cookie_jar.update_cookies(cookies, response_url=STF_BASE)
 
-
-# ---------------------------
-# Auth / request helpers
-# ---------------------------
 
 def _looks_like_logout(status: int, body: str) -> bool:
     body_s = (body or "").strip()
@@ -104,9 +81,9 @@ def _looks_like_logout(status: int, body: str) -> bool:
 
 
 async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> None:
-    """Fetch _csrf token header from chkLogin.do.
+    """Fetch CSRF header from chkLogin.do and validate session.
 
-    Raises ConfigEntryAuthFailed if session/cookies are invalid.
+    Samsung may return 200 with body 'fail' when session invalid.
     """
     async with session.get(URL_GET_CSRF) as response:
         text = await response.text()
@@ -115,7 +92,6 @@ async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_
                 f"SmartThings Find auth failed (chkLogin.do status={response.status}, body={text!r})"
             )
 
-        # Samsung returns 200 with body 'fail' when cookie/session invalid
         if text.strip() == "fail":
             raise ConfigEntryAuthFailed(
                 "SmartThings Find session invalid/expired (chkLogin.do returned 200 but body='fail')"
@@ -132,7 +108,7 @@ async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_
             )
 
         hass.data[DOMAIN][entry_id]["_csrf"] = csrf_token
-        _LOGGER.debug("Fetched new CSRF token for entry %s", entry_id)
+        _LOGGER.debug("Fetched CSRF token for %s", entry_id)
 
 
 async def _ensure_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> str:
@@ -155,10 +131,12 @@ async def _request_text(
     data: Any = None,
     retry_auth_once: bool = True,
 ) -> Tuple[int, str, Dict[str, str]]:
-    """Make a request and return (status, text, headers).
-
-    If 401/Logout/fail occurs, refresh CSRF and retry once, then raise ConfigEntryAuthFailed.
+    """Request wrapper:
+    - Detect 401/403 or body 'Logout'/'fail'
+    - Refresh CSRF once and retry
+    - Still invalid => ConfigEntryAuthFailed (triggers reauth)
     """
+
     async def _do() -> Tuple[int, str, Dict[str, str]]:
         async with session.request(method, url, headers=headers, json=json_payload, data=data) as resp:
             txt = await resp.text()
@@ -169,17 +147,17 @@ async def _request_text(
     if _looks_like_logout(status, txt):
         if retry_auth_once:
             _LOGGER.warning(
-                "Auth looks invalid for %s %s (status=%s, body=%r) -> trying CSRF refresh once",
-                method, url, status, (txt or "")[:200],
+                "Auth invalid for %s %s (status=%s, body=%r) -> CSRF refresh + retry once",
+                method,
+                url,
+                status,
+                (txt or "")[:200],
             )
-            # CSRF refresh will also validate session; if invalid it will raise ConfigEntryAuthFailed
             await fetch_csrf(hass, session, entry_id)
             status, txt, hdrs = await _do()
 
         if _looks_like_logout(status, txt):
-            raise ConfigEntryAuthFailed(
-                f"Session invalid while fetching data: {status} {txt!r}"
-            )
+            raise ConfigEntryAuthFailed(f"Session invalid while fetching data: {status} {txt!r}")
 
     return status, txt, hdrs
 
@@ -209,9 +187,7 @@ async def _request_json(
     )
 
     if status != 200:
-        raise aiohttp.ClientResponseError(
-            request_info=None, history=(), status=status, message=txt
-        )
+        raise aiohttp.ClientResponseError(request_info=None, history=(), status=status, message=txt)
 
     try:
         return json.loads(txt)
@@ -224,12 +200,8 @@ async def _request_json(
         )
 
 
-# ---------------------------
-# API calls
-# ---------------------------
-
 async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> list:
-    """Retrieve list of devices from SmartThings Find."""
+    """Retrieve list of devices from STF."""
     csrf = await _ensure_csrf(hass, session, entry_id)
     url = f"{URL_DEVICE_LIST}?_csrf={csrf}"
 
@@ -252,11 +224,7 @@ async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry
         identifier = (DOMAIN, device["dvceID"])
         ha_dev = device_registry.async_get(hass).async_get_device({identifier})
         if ha_dev and ha_dev.disabled:
-            _LOGGER.debug(
-                "Ignoring disabled device: %r (disabled_by=%s)",
-                device["modelName"],
-                ha_dev.disabled_by,
-            )
+            _LOGGER.debug("Ignoring disabled device: %r", device["modelName"])
             continue
 
         ha_dev_info = DeviceInfo(
@@ -268,7 +236,6 @@ async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry
         )
 
         devices.append({"data": device, "ha_dev_info": ha_dev_info})
-        _LOGGER.debug("Adding device: %s", device["modelName"])
 
     return devices
 
@@ -279,7 +246,7 @@ async def get_device_location(
     dev_data: dict,
     entry_id: str,
 ) -> Optional[dict]:
-    """Request update (optional) and fetch current device location."""
+    """Fetch current device location/ops. Active mode triggers update request first."""
     dev_id = dev_data["dvceID"]
     dev_name = dev_data.get("modelName", dev_id)
 
@@ -297,7 +264,7 @@ async def get_device_location(
         or (dev_data.get("deviceTypeCode") != "TAG" and hass.data[DOMAIN][entry_id][CONF_ACTIVE_MODE_OTHERS])
     )
 
-    # 1) Optional active update request
+    # Active mode: request update
     if active:
         await _request_text(
             hass,
@@ -309,7 +276,7 @@ async def get_device_location(
             retry_auth_once=True,
         )
 
-    # 2) Fetch operations/location
+    # Fetch operations/location
     status, txt, _ = await _request_text(
         hass,
         session,
@@ -354,7 +321,7 @@ async def get_device_location(
         if op.get("oprnType") not in ["LOCATION", "LASTLOC", "OFFLINE_LOC"]:
             continue
 
-        # Plain lat/lon
+        # plain lat/lon
         if "latitude" in op:
             utc_date = None
             if "extra" in op and "gpsUtcDt" in op["extra"]:
@@ -383,7 +350,7 @@ async def get_device_location(
             used_op = op
             continue
 
-        # Enc location (may be encrypted)
+        # encLocation (may be encrypted)
         if "encLocation" in op:
             loc = op["encLocation"]
             if isinstance(loc, dict) and loc.get("encrypted"):
@@ -419,10 +386,6 @@ async def get_device_location(
     return res
 
 
-# ---------------------------
-# Utility functions
-# ---------------------------
-
 def calc_gps_accuracy(hu: float, vu: float) -> Optional[float]:
     try:
         return round((float(hu) ** 2 + float(vu) ** 2) ** 0.5, 1)
@@ -431,7 +394,7 @@ def calc_gps_accuracy(hu: float, vu: float) -> Optional[float]:
 
 
 def get_sub_location(ops: list, subDeviceName: str) -> tuple:
-    if not ops or not subDeviceName or len(ops) < 1:
+    if not ops or not subDeviceName:
         return {}, {}
     for op in ops:
         if subDeviceName in op.get("encLocation", {}):
@@ -468,7 +431,7 @@ def get_battery_level(dev_name: str, ops: list) -> Optional[int]:
 
 
 def gen_qr_code_base64(data: str) -> str:
-    # Kept for backward compatibility; QR auth is deprecated in this fork
+    """Kept for compatibility; QR auth is deprecated. If qrcode isn't installed, returns empty."""
     try:
         import qrcode  # type: ignore
     except Exception:
