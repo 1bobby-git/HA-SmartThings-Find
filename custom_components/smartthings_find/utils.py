@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterable
 
 import aiohttp
 import pytz
@@ -45,21 +45,110 @@ DEFAULT_HEADERS = {
 }
 
 
+def _norm(s: str | None) -> str:
+    """이름 매칭용 normalize"""
+    if not s:
+        return ""
+    s = s.strip().lower()
+    # 공백/특수문자 제거
+    s = re.sub(r"[\s\-_]+", "", s)
+    s = re.sub(r"[^\w가-힣]+", "", s)
+    return s
+
+
+def _iter_smartthings_devices(dr: device_registry.DeviceRegistry) -> Iterable[device_registry.DeviceEntry]:
+    for dev in dr.devices.values():
+        if any(i[0] == SMARTTHINGS_DOMAIN for i in dev.identifiers):
+            yield dev
+
+
+def _pick_best_smartthings_identifier(
+    hass: HomeAssistant,
+    stf_name: str,
+    stf_model: str | None = None,
+) -> tuple[str, str] | None:
+    """
+    SmartThings 공식 통합의 DeviceEntry를 '이름/모델'로 찾아 identifiers 중 ("smartthings", xxx) 반환.
+    - 이름이 정확히 일치하면 우선
+    - 동명이 다수면 model까지 일치해야 병합
+    """
+    dr = device_registry.async_get(hass)
+    target_name = _norm(stf_name)
+    target_model = (stf_model or "").strip().lower()
+
+    candidates: list[tuple[int, device_registry.DeviceEntry, tuple[str, str]]] = []
+
+    for dev in _iter_smartthings_devices(dr):
+        name = dev.name_by_user or dev.name or ""
+        score = 0
+
+        if _norm(name) == target_name and target_name:
+            score += 100
+
+        # manufacturer/model 힌트
+        if dev.manufacturer and "samsung" in dev.manufacturer.lower():
+            score += 10
+
+        if target_model and dev.model and dev.model.strip().lower() == target_model:
+            score += 30
+
+        if score <= 0:
+            continue
+
+        # smartthings identifier 하나 선택
+        st_ids = [i for i in dev.identifiers if i[0] == SMARTTHINGS_DOMAIN]
+        if not st_ids:
+            continue
+
+        # 보통 1개지만, 여러개면 첫번째 사용
+        candidates.append((score, dev, st_ids[0]))
+
+    if not candidates:
+        return None
+
+    # 점수 높은 순
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best_score = candidates[0][0]
+    best = [c for c in candidates if c[0] == best_score]
+
+    # 동점이 여러개면(동명이 여러개) → model까지 일치한 것만 남기고 다시 결정
+    if len(best) > 1 and target_model:
+        best2 = []
+        for score, dev, st_id in best:
+            if dev.model and dev.model.strip().lower() == target_model:
+                best2.append((score + 50, dev, st_id))
+        if best2:
+            best2.sort(key=lambda x: x[0], reverse=True)
+            best_score = best2[0][0]
+            best = [c for c in best2 if c[0] == best_score]
+
+    # 그래도 다수면 병합 위험 → 병합 안 함
+    if len(best) > 1:
+        _LOGGER.warning(
+            "SmartThings device merge skipped: multiple candidates for name='%s' model='%s': %s",
+            stf_name,
+            stf_model,
+            [b[1].id for b in best],
+        )
+        return None
+
+    chosen = best[0][2]
+    _LOGGER.debug(
+        "SmartThings device merge matched: STF name='%s' model='%s' -> ST identifier=%s",
+        stf_name,
+        stf_model,
+        chosen,
+    )
+    return chosen
+
+
 def parse_cookie_header(raw: str) -> dict[str, str]:
-    """
-    Accepts:
-      - "Cookie: a=b; c=d"
-      - "a=b; c=d"
-    Returns dict for aiohttp cookie_jar.update_cookies()
-    """
     if not raw:
         return {}
-
     raw = raw.strip()
     raw = _COOKIE_PREFIX_RE.sub("", raw).strip()
     if not raw:
         return {}
-
     cookies: dict[str, str] = {}
     parts = [p.strip() for p in raw.split(";") if p.strip()]
     for part in parts:
@@ -68,23 +157,17 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
         k, v = part.split("=", 1)
         k = k.strip()
         v = v.strip()
-
-        # aiohttp/http.cookies: key에 공백 있으면 CookieError
         if not k or re.search(r"\s", k):
             continue
-
         cookies[k] = v
-
     return cookies
 
 
 def apply_cookies_to_session(session: aiohttp.ClientSession, cookies: dict[str, str]) -> None:
-    """response_url must be yarl.URL (prevents raw_host error)."""
     session.cookie_jar.update_cookies(cookies, response_url=URL(STF_BASE))
 
 
 async def make_isolated_session(hass: HomeAssistant) -> aiohttp.ClientSession:
-    """Integration-dedicated aiohttp session (isolated cookie jar)."""
     jar = aiohttp.CookieJar()
     return async_create_clientsession(hass, headers=DEFAULT_HEADERS, cookie_jar=jar)
 
@@ -99,57 +182,51 @@ async def make_session_with_cookie(hass: HomeAssistant, cookie_header: str) -> a
     return session
 
 
-# ✅ backward-compatible alias (구버전 config_flow.py가 make_session을 import해도 동작)
+# 구버전 호환
 async def make_session(hass: HomeAssistant, cookie_header: str) -> aiohttp.ClientSession:
     return await make_session_with_cookie(hass, cookie_header)
 
 
 async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, *_args: Any) -> str:
-    """
-    Keep-alive + CSRF refresh.
-    chkLogin.do:
-      - success: header "_csrf" exists
-      - invalid: body 'fail' or 'Logout'
-    ✅ backward compatible: old code may call fetch_csrf(hass, session, entry_id)
-    """
     async with session.get(URL_GET_CSRF) as resp:
         body = (await resp.text()).strip()
-
         if resp.status != 200:
             raise ConfigEntryAuthFailed(f"SmartThings Find auth failed (status={resp.status})")
-
         csrf = resp.headers.get("_csrf")
         if csrf:
             return csrf
-
         if body.lower() in ("fail", "logout"):
             raise ConfigEntryAuthFailed(
                 f"SmartThings Find session invalid/expired (chkLogin.do body='{body}')"
             )
-
         raise ConfigEntryAuthFailed("CSRF token not found in chkLogin.do response")
 
 
 def _build_device_info(hass: HomeAssistant, dev: dict[str, Any]) -> DeviceInfo:
+    """
+    ✅ 핵심:
+    1) 우리 식별자 (DOMAIN, dvceID)
+    2) SmartThings 공식 통합 기기가 있으면 그 identifier도 추가해서 같은 Device로 병합
+    """
     dvce_id = dev["dvceID"]
     identifier_ours = (DOMAIN, dvce_id)
-    identifier_st = (SMARTTHINGS_DOMAIN, dvce_id)
-
-    dr = device_registry.async_get(hass)
-    st_dev = dr.async_get_device({identifier_st})
-
-    identifiers = {identifier_ours}
-    if st_dev is not None:
-        identifiers.add(identifier_st)
 
     model_name = html.unescape(html.unescape(dev.get("modelName") or "Unknown"))
-    model_id = dev.get("modelID") or "Unknown"
+    model_id = dev.get("modelID") or None
+
+    identifiers = {identifier_ours}
+
+    # 🔥 기존 "dvceID가 smartthings id와 같을 때만" merge → 실패가 많음
+    # ✅ 이제는 Device Registry에서 이름/모델 매칭으로 smartthings identifier 찾아 붙임
+    st_identifier = _pick_best_smartthings_identifier(hass, model_name, model_id)
+    if st_identifier:
+        identifiers.add(st_identifier)
 
     return DeviceInfo(
         identifiers=identifiers,
         manufacturer="Samsung",
         name=model_name,
-        model=model_id,
+        model=model_id or "Unknown",
         configuration_url=STF_BASE,
     )
 
@@ -231,7 +308,6 @@ async def send_operation(
             _LOGGER.warning(
                 "Operation %s failed for %s (%s): %s", operation, dvce_id, resp.status, txt[:200]
             )
-
 
 async def get_device_location(
     hass: HomeAssistant,

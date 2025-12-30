@@ -1,4 +1,4 @@
-# HA-SmartThings-Find (Cookie Auth)
+# SmartThings Find
 
 Samsung **SmartThings Find** 비공식(역공학) 연동을 Home Assistant에서 쓰기 위한 커스텀 통합입니다.  
 원본 프로젝트(`Vedeneb/HA-SmartThings-Find`)를 기반으로, **현재 삼성 로그인 흐름 변경으로 QR 로그인이 사라진 상태**에 맞춰 **브라우저 쿠키(Cookie header) 수동 입력 방식**으로 포크/수정한 버전입니다.

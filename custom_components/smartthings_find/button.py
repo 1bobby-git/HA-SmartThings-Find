@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
@@ -18,7 +19,7 @@ class STFButtonDescription(ButtonEntityDescription):
     status: str | None = None
 
 
-BUTTONS: list[STFButtonDescription] = [
+BASE_BUTTONS: list[STFButtonDescription] = [
     STFButtonDescription(
         key="ring",
         name="Ring",
@@ -34,6 +35,112 @@ BUTTONS: list[STFButtonDescription] = [
     ),
 ]
 
+_OPERATION_META: dict[str, dict[str, str]] = {
+    "RING": {"name": "Ring", "icon": "mdi:volume-high", "status": "start"},
+    "CHECK_CONNECTION_WITH_LOCATION": {"name": "Refresh location", "icon": "mdi:crosshairs-gps"},
+    "LOCATE": {"name": "Locate", "icon": "mdi:crosshairs"},
+    "TRACK_LOCATION": {"name": "Track location", "icon": "mdi:map-marker-path"},
+    "REMOTE_LOCK": {"name": "Remote lock", "icon": "mdi:lock"},
+    "LOCK": {"name": "Lock", "icon": "mdi:lock"},
+    "ERASE": {"name": "Erase data", "icon": "mdi:delete-forever"},
+    "DELETE_DATA": {"name": "Erase data", "icon": "mdi:delete-forever"},
+    "BACKUP": {"name": "Backup", "icon": "mdi:backup-restore"},
+    "EXTEND_BATTERY": {"name": "Extend battery life", "icon": "mdi:battery-plus"},
+    "POWER_OFF": {"name": "Power off", "icon": "mdi:power"},
+    "SIREN": {"name": "Siren", "icon": "mdi:alarm-bell"},
+}
+
+_OPERATION_LIST_KEYS = (
+    "supportOperations",
+    "supportOperationList",
+    "operationList",
+    "operations",
+    "oprnList",
+    "oprnTypeList",
+    "funcList",
+    "functionList",
+)
+
+
+def _normalize_key(value: str) -> str:
+    key = re.sub(r"[^a-zA-Z0-9]+", "_", value.strip().lower()).strip("_")
+    return key or "operation"
+
+
+def _parse_operation_entry(entry: Any) -> tuple[str, str | None] | None:
+    if isinstance(entry, str):
+        return entry, None
+    if not isinstance(entry, dict):
+        return None
+
+    op = (
+        entry.get("operation")
+        or entry.get("oprnType")
+        or entry.get("oprnCd")
+        or entry.get("code")
+        or entry.get("type")
+        or entry.get("id")
+        or entry.get("key")
+    )
+    if not isinstance(op, str) or not op:
+        return None
+
+    status = entry.get("status") or entry.get("oprnStatus")
+    return op, status if isinstance(status, str) else None
+
+
+def _extract_supported_operations(dev_data: dict[str, Any]) -> list[tuple[str, str | None]]:
+    for key in _OPERATION_LIST_KEYS:
+        raw = dev_data.get(key)
+        if isinstance(raw, list):
+            ops: list[tuple[str, str | None]] = []
+            for entry in raw:
+                parsed = _parse_operation_entry(entry)
+                if parsed:
+                    ops.append(parsed)
+            if ops:
+                return ops
+        if isinstance(raw, dict):
+            ops = []
+            for op_key, op_val in raw.items():
+                if isinstance(op_key, str):
+                    status = None
+                    if isinstance(op_val, dict):
+                        status = op_val.get("status") or op_val.get("oprnStatus")
+                    ops.append((op_key, status if isinstance(status, str) else None))
+            if ops:
+                return ops
+    return []
+
+
+def _build_button_descriptions(dev_data: dict[str, Any]) -> list[STFButtonDescription]:
+    is_tag = dev_data.get("deviceTypeCode") == "TAG"
+    descriptions = list(BASE_BUTTONS)
+    if is_tag:
+        return descriptions
+
+    supported_ops = _extract_supported_operations(dev_data)
+    if not supported_ops:
+        return descriptions
+
+    seen_ops = {desc.operation for desc in descriptions}
+    for op, status in supported_ops:
+        if op in seen_ops:
+            continue
+        meta = _OPERATION_META.get(op, {})
+        descriptions.append(
+            STFButtonDescription(
+                key=_normalize_key(op),
+                name=meta.get("name", op.replace("_", " ").title()),
+                icon=meta.get("icon", "mdi:gesture-tap-button"),
+                operation=op,
+                status=meta.get("status", status),
+            )
+        )
+        seen_ops.add(op)
+
+    return descriptions
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
@@ -42,7 +149,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     entities: list[ButtonEntity] = []
     for dev in devices:
-        for desc in BUTTONS:
+        for desc in _build_button_descriptions(dev["data"]):
             entities.append(SmartThingsFindButton(coordinator, entry, dev, desc))
     async_add_entities(entities)
 
