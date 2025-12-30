@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "SmartThings Find 로그인(수동)",
-        "description": "1) 사이트 열기: [smartthingsfind.samsung.com](https://smartthingsfind.samsung.com/)\\n2) 브라우저 로그인 후 개발자도구(F12) → Network\\n3) `chkLogin.do` 요청 선택 (필요 시 새로고침)\\n4) Request Headers → `Cookie:` 줄 전체를 복사\\n5) 아래 입력창에 그대로 붙여넣기",
+        "description": "1) 사이트 열기: [smartthingsfind.samsung.com](https://smartthingsfind.samsung.com/)\n2) 브라우저 로그인 후 개발자도구(F12) → Network\n3) `chkLogin.do` 요청 선택 (필요 시 새로고침)\n4) Request Headers → **Cookie:** 줄 전체 복사\n5) 아래 입력창에 그대로 붙여넣기",
         "data": {
           "jsessionid": "Cookie 헤더 전체(예: Cookie: a=b; c=d)"
         }

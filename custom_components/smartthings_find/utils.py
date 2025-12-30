@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 import aiohttp
 from yarl import URL
@@ -126,6 +126,49 @@ async def _ensure_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entr
     return token
 
 
+def _find_unique_smartthings_device_identifiers_by_name(
+    hass: HomeAssistant,
+    model_name: str,
+) -> Set[Tuple[str, str]]:
+    """If exactly ONE SmartThings device matches this name, return its identifiers.
+
+    This is a heuristic to merge STF devices into official SmartThings device page
+    when dvceID does not match. To avoid wrong merges, we only merge on unique match.
+    """
+    if not model_name:
+        return set()
+
+    dr = device_registry.async_get(hass)
+    candidates = []
+
+    for dev in dr.devices.values():
+        # Must belong to SmartThings integration
+        if not any(i[0] == SMARTTHINGS_DOMAIN for i in dev.identifiers):
+            continue
+
+        names = {dev.name, dev.name_by_user}
+        if model_name in names:
+            candidates.append(dev)
+
+    if len(candidates) == 1:
+        return set(candidates[0].identifiers)
+
+    return set()
+
+
+def build_device_identifiers(hass: HomeAssistant, dvce_id: str, model_name: str) -> Set[Tuple[str, str]]:
+    """Build identifiers that can merge with official SmartThings device when possible."""
+    identifiers: Set[Tuple[str, str]] = {(DOMAIN, dvce_id)}
+
+    # Strong merge: if SmartThings uses same dvce_id, this will merge cleanly
+    identifiers.add((SMARTTHINGS_DOMAIN, dvce_id))
+
+    # Heuristic merge by name only if unique
+    identifiers |= _find_unique_smartthings_device_identifiers_by_name(hass, model_name)
+
+    return identifiers
+
+
 async def _request_text(
     hass: HomeAssistant,
     session: aiohttp.ClientSession,
@@ -137,14 +180,8 @@ async def _request_text(
     json_payload: Any = None,
     data: Any = None,
     retry_auth_once: bool = True,
-) -> Tuple[int, str, Dict[str, str]]:
-    """Request wrapper:
-    - detect invalid auth: 401/403 or body 'Logout'/'fail'
-    - refresh CSRF and retry once
-    - if still invalid -> ConfigEntryAuthFailed (triggers HA reauth)
-    """
-
-    async def _do() -> Tuple[int, str, Dict[str, str]]:
+):
+    async def _do():
         async with session.request(method, url, headers=headers, json=json_payload, data=data) as resp:
             txt = await resp.text()
             return resp.status, txt, dict(resp.headers)
@@ -155,10 +192,7 @@ async def _request_text(
         if retry_auth_once:
             _LOGGER.warning(
                 "Auth invalid (%s %s) status=%s body=%r -> CSRF refresh + retry once",
-                method,
-                url,
-                status,
-                (txt or "")[:200],
+                method, url, status, (txt or "")[:200],
             )
             await fetch_csrf(hass, session, entry_id)
             status, txt, hdrs = await _do()
@@ -180,7 +214,7 @@ async def _request_json(
     json_payload: Any = None,
     data: Any = None,
     retry_auth_once: bool = True,
-) -> Any:
+):
     status, txt, _ = await _request_text(
         hass,
         session,
@@ -224,24 +258,19 @@ async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry
         device["modelName"] = html.unescape(html.unescape(device.get("modelName", "")))
 
         dvce_id = device["dvceID"]
+        model_name = device["modelName"]
 
-        # ✅ 핵심: SmartThings 공식 통합과 동일 device registry 병합을 유도
-        # - 우리쪽 identifier: (smartthings_find, dvceID)
-        # - 공식 smartthings identifier도 (smartthings, dvceID)로 존재한다면 같은 디바이스로 합쳐짐
-        identifiers = {
-            (DOMAIN, dvce_id),
-            (SMARTTHINGS_DOMAIN, dvce_id),
-        }
+        identifiers = build_device_identifiers(hass, dvce_id, model_name)
 
         ha_dev = dr.async_get_device(identifiers)
         if ha_dev and ha_dev.disabled:
-            _LOGGER.debug("Ignoring disabled device: %r", device["modelName"])
+            _LOGGER.debug("Ignoring disabled device: %r", model_name)
             continue
 
         ha_dev_info = DeviceInfo(
             identifiers=identifiers,
             manufacturer="Samsung",
-            name=device["modelName"],
+            name=model_name,
             model=device.get("modelID"),
             configuration_url=STF_BASE + "/",
         )
@@ -257,7 +286,6 @@ async def get_device_location(
     dev_data: dict,
     entry_id: str,
 ) -> Optional[dict]:
-    """Fetch current device location / operations."""
     dev_id = dev_data["dvceID"]
     dev_name = dev_data.get("modelName", dev_id)
 
@@ -330,12 +358,10 @@ async def get_device_location(
         if op.get("oprnType") not in ("LOCATION", "LASTLOC", "OFFLINE_LOC"):
             continue
 
-        # Plain location
         if "latitude" in op:
             if "extra" not in op or "gpsUtcDt" not in op["extra"]:
                 continue
             utc_date = parse_stf_date(op["extra"]["gpsUtcDt"])
-
             if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
                 continue
 
@@ -354,7 +380,6 @@ async def get_device_location(
             res["location_found"] = True
             continue
 
-        # encLocation (may be encrypted)
         if "encLocation" in op:
             loc = op["encLocation"]
             if isinstance(loc, dict) and loc.get("encrypted"):
@@ -391,7 +416,6 @@ async def get_device_location(
 
 
 def calc_gps_accuracy(hu: Any, vu: Any) -> Optional[float]:
-    """Combine horizontal/vertical uncertainties to a single accuracy value in meters."""
     try:
         if hu is None or vu is None:
             return None
@@ -401,12 +425,10 @@ def calc_gps_accuracy(hu: Any, vu: Any) -> Optional[float]:
 
 
 def parse_stf_date(datestr: str) -> datetime:
-    """Parse STF date format: YYYYmmddHHMMSS (UTC)."""
     return datetime.strptime(datestr, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
 
 
 def get_battery_level(dev_name: str, ops: list) -> Optional[int]:
-    """Extract battery level from CHECK_CONNECTION operation."""
     for op in ops or []:
         if op.get("oprnType") == "CHECK_CONNECTION" and "battery" in op:
             batt_raw = op["battery"]

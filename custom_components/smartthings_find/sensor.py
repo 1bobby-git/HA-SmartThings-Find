@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from homeassistant.components.sensor import (
+    SensorEntity,
+    SensorDeviceClass,
+    SensorStateClass,
+)
 from homeassistant.const import PERCENTAGE, UnitOfLength
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -11,6 +15,15 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 from .utils import get_battery_level
 from . import SmartThingsFindCoordinator
+
+
+def _get_colored_icon_url(dev_data: dict) -> Optional[str]:
+    icons = dev_data.get("icons")
+    if isinstance(icons, dict):
+        url = icons.get("coloredIcon") or icons.get("icon") or icons.get("monoIcon")
+        if isinstance(url, str) and url.startswith("http"):
+            return url
+    return None
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
@@ -34,6 +47,10 @@ class _Base(CoordinatorEntity, SensorEntity):
         self._entry_id = entry_id
         self._dvce_id = dvce_id
 
+        # ✅ 모든 센서가 "디바이스 그림 아이콘" 사용 (원본 느낌 유지)
+        dev = self.coordinator.devices_by_id.get(self._dvce_id, {}).get("data", {})
+        self._attr_entity_picture = _get_colored_icon_url(dev)
+
     @property
     def device_info(self):
         d = self.coordinator.devices_by_id.get(self._dvce_id)
@@ -48,6 +65,11 @@ class _Base(CoordinatorEntity, SensorEntity):
 
 
 class SmartThingsFindBatterySensor(_Base):
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_icon = "mdi:battery"  # fallback only (entity_picture가 없을 때)
+
     @property
     def unique_id(self) -> str:
         return f"{self._entry_id}_{self._dvce_id}_battery"
@@ -55,10 +77,6 @@ class SmartThingsFindBatterySensor(_Base):
     @property
     def name(self) -> str:
         return f"{self._dev_name()} Battery"
-
-    @property
-    def native_unit_of_measurement(self) -> str:
-        return PERCENTAGE
 
     @property
     def native_value(self) -> int | None:
@@ -76,6 +94,11 @@ class SmartThingsFindBatterySensor(_Base):
 
 
 class SmartThingsFindAccuracySensor(_Base):
+    _attr_device_class = SensorDeviceClass.DISTANCE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfLength.METERS
+    _attr_icon = "mdi:crosshairs-gps"  # fallback only
+
     @property
     def unique_id(self) -> str:
         return f"{self._entry_id}_{self._dvce_id}_accuracy"
@@ -83,10 +106,6 @@ class SmartThingsFindAccuracySensor(_Base):
     @property
     def name(self) -> str:
         return f"{self._dev_name()} GPS Accuracy"
-
-    @property
-    def native_unit_of_measurement(self) -> str:
-        return UnitOfLength.METERS
 
     @property
     def native_value(self) -> float | None:
@@ -107,6 +126,7 @@ class SmartThingsFindAccuracySensor(_Base):
 
 class SmartThingsFindLastSeenSensor(_Base):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:clock-outline"  # fallback only
 
     @property
     def unique_id(self) -> str:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from homeassistant.components.device_tracker import TrackerEntity, SourceType
 from homeassistant.config_entries import ConfigEntry
@@ -9,6 +9,15 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from . import SmartThingsFindCoordinator
+
+
+def _get_colored_icon_url(dev_data: dict) -> Optional[str]:
+    icons = dev_data.get("icons")
+    if isinstance(icons, dict):
+        url = icons.get("coloredIcon") or icons.get("icon") or icons.get("monoIcon")
+        if isinstance(url, str) and url.startswith("http"):
+            return url
+    return None
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
@@ -24,10 +33,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 
 class SmartThingsFindDeviceTracker(CoordinatorEntity, TrackerEntity):
+    """GPS tracker entity for STF device."""
+
     def __init__(self, coordinator: SmartThingsFindCoordinator, entry_id: str, dvce_id: str) -> None:
         super().__init__(coordinator)
         self._entry_id = entry_id
         self._dvce_id = dvce_id
+
+        # ✅ 원본처럼 "그림 아이콘" 노출 (device icon URL)
+        dev = self.coordinator.devices_by_id.get(self._dvce_id, {}).get("data", {})
+        self._attr_entity_picture = _get_colored_icon_url(dev)
+
+        # fallback mdi (그림 URL이 없을 때만)
+        self._attr_icon = "mdi:map-search"
 
     @property
     def unique_id(self) -> str:
