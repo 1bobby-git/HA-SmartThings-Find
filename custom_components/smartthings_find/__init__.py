@@ -28,7 +28,6 @@ from .utils import (
     make_session,
     fetch_csrf,
     get_devices,
-    persist_cookie_to_entry,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,47 +60,55 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     active_others = entry.options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT)
     st_identifier = entry.options.get(CONF_ST_IDENTIFIER)
 
+    # ✅ FIX: 반드시 먼저 정의 (UnboundLocalError 방지)
+    update_interval_s = entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
+    try:
+        update_interval_s = int(update_interval_s)
+    except Exception:  # noqa: BLE001
+        update_interval_s = int(CONF_UPDATE_INTERVAL_DEFAULT)
+
     hass.data[DOMAIN][entry.entry_id].update(
         {
-            CONF_ACTIVE_MODE_SMARTTAGS: active_smarttags,
-            CONF_ACTIVE_MODE_OTHERS: active_others,
+            CONF_ACTIVE_MODE_SMARTTAGS: bool(active_smarttags),
+            CONF_ACTIVE_MODE_OTHERS: bool(active_others),
             CONF_ST_IDENTIFIER: st_identifier,
         }
     )
 
-    # Validate session + store csrf
-    await fetch_csrf(hass, session, entry.entry_id)
-    await persist_cookie_to_entry(hass, entry, session)
+    try:
+        # Validate session + store csrf
+        await fetch_csrf(hass, session, entry.entry_id)
 
-    devices = await get_devices(hass, session, entry.entry_id)
+        # Load devices
+        devices = await get_devices(hass, session, entry.entry_id)
 
-    update_interval = entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
+        coordinator = SmartThingsFindCoordinator(
+            hass=hass,
+            entry=entry,
+            session=session,
+            devices=devices,
+            update_interval_s=update_interval_s,
+        )
 
-    coordinator = SmartThingsFindCoordinator(
-        hass=hass,
-        entry=entry,
-        session=session,
-        devices=devices,
-        update_interval_s=update_interval,
-    )
-    if update_interval_s is None:
-        update_interval_s = 60
+        await coordinator.async_config_entry_first_refresh()
 
-    # 브라우저 idle logout(5~10분) 대응: keepalive는 무조건 240초 이하로
-    keepalive_interval_s = min(240, max(90, int(keepalive_interval_s)))
+        hass.data[DOMAIN][entry.entry_id].update(
+            {
+                DATA_SESSION: session,
+                DATA_COORDINATOR: coordinator,
+                DATA_DEVICES: devices,
+            }
+        )
 
-    await coordinator.async_config_entry_first_refresh()
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        return True
 
-    hass.data[DOMAIN][entry.entry_id].update(
-        {
-            DATA_SESSION: session,
-            DATA_COORDINATOR: coordinator,
-            DATA_DEVICES: devices,
-        }
-    )
-
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    return True
+    except Exception:
+        try:
+            await session.close()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
