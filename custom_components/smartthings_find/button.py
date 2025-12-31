@@ -27,7 +27,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up minimal SmartThings Find buttons (0.3.23).
+    """Set up minimal SmartThings Find buttons.
 
     Keep only:
     - Ring
@@ -114,20 +114,30 @@ class _STFOperationButton(ButtonEntity):
             return False
 
     async def _kick_refresh(self) -> None:
-        """Force coordinator refresh so sensors (Last update) reflect latest server state."""
+        """Force coordinator refresh so sensors reflect latest server state.
+
+        Do one immediate refresh, then schedule delayed refreshes in background.
+        """
+        coordinator = self.hass.data[DOMAIN][self._entry_id].get(DATA_COORDINATOR)
+        if coordinator is None:
+            return
+
         try:
-            coordinator = self.hass.data[DOMAIN][self._entry_id].get(DATA_COORDINATOR)
-            if coordinator is None:
-                return
-
-            # 1) immediately request refresh
-            await coordinator.async_request_refresh()
-
-            # 2) and again after a short delay (server updates are async)
-            await asyncio.sleep(2)
             await coordinator.async_request_refresh()
         except Exception as err:
-            _LOGGER.debug("Coordinator refresh kick failed: %s", err)
+            _LOGGER.debug("Immediate coordinator refresh failed: %s", err)
+            return
+
+        async def _delayed_refresh(delay_s: int) -> None:
+            try:
+                await asyncio.sleep(delay_s)
+                await coordinator.async_request_refresh()
+            except Exception as err:
+                _LOGGER.debug("Delayed refresh (%ss) failed: %s", delay_s, err)
+
+        # STF 서버 반영 지연 대비(버튼 응답은 빠르게 종료)
+        self.hass.async_create_task(_delayed_refresh(2))
+        self.hass.async_create_task(_delayed_refresh(6))
 
 
 class RingStartButton(_STFOperationButton):
@@ -140,14 +150,15 @@ class RingStartButton(_STFOperationButton):
         self._attr_name = f"{model_name} Ring"
 
     async def async_press(self) -> None:
-        await self._post_operation(
+        ok = await self._post_operation(
             OP_RING,
             {
                 "status": "start",
                 "lockMessage": "Home Assistant is ringing your device!",
             },
         )
-        await self._kick_refresh()
+        if ok:
+            await self._kick_refresh()
 
 
 class RingStopButton(_STFOperationButton):
@@ -160,9 +171,9 @@ class RingStopButton(_STFOperationButton):
         self._attr_name = f"{model_name} Stop Ring"
 
     async def async_press(self) -> None:
-        # Best-effort: OP_RING + status=stop
-        await self._post_operation(OP_RING, {"status": "stop"})
-        await self._kick_refresh()
+        ok = await self._post_operation(OP_RING, {"status": "stop"})
+        if ok:
+            await self._kick_refresh()
 
 
 class UpdateLocationButton(_STFOperationButton):
@@ -175,5 +186,6 @@ class UpdateLocationButton(_STFOperationButton):
         self._attr_name = f"{model_name} Update Location"
 
     async def async_press(self) -> None:
-        await self._post_operation(OP_CHECK_CONNECTION_WITH_LOCATION)
-        await self._kick_refresh()
+        ok = await self._post_operation(OP_CHECK_CONNECTION_WITH_LOCATION)
+        if ok:
+            await self._kick_refresh()

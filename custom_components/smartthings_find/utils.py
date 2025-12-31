@@ -9,11 +9,11 @@ from typing import Any
 
 import aiohttp
 import pytz
-from http.cookies import SimpleCookie, CookieError
+from http.cookies import CookieError, SimpleCookie
 from yarl import URL
 
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.entity import DeviceInfo
@@ -24,13 +24,8 @@ from .const import (
     CONF_ACTIVE_MODE_SMARTTAGS,
     CONF_ACTIVE_MODE_OTHERS,
     CONF_ST_IDENTIFIER,
-    OP_RING,
     OP_CHECK_CONNECTION_WITH_LOCATION,
     OP_CHECK_CONNECTION,
-    OP_LOCK,
-    OP_ERASE,
-    OP_TRACK,
-    OP_EXTEND_BATTERY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -134,13 +129,11 @@ async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_
 
 
 # =========================
-# 0.3.16+ SmartThings mapping helpers
+# SmartThings device registry mapping helpers (optional)
 # =========================
 
 def list_smartthings_devices_for_ui(hass: HomeAssistant) -> list[tuple[str, str]]:
-    """
-    Returns list of (device_registry_id, label) for SmartThings official devices.
-    """
+    """Returns list of (device_registry_id, label) for SmartThings official devices."""
     dr = device_registry.async_get(hass)
     items: list[tuple[str, str]] = []
 
@@ -189,9 +182,7 @@ def _decode_smartthings_identifier(value: Any) -> tuple[str, str] | None:
 
 
 def get_smartthings_identifier_value_by_device_id(hass: HomeAssistant, device_id: str) -> str:
-    """
-    device_registry DeviceEntry.id -> first smartthings identifier -> encoded string
-    """
+    """device_registry DeviceEntry.id -> first smartthings identifier -> encoded string"""
     dr = device_registry.async_get(hass)
     dev = dr.devices.get(device_id)
     if not dev or not dev.identifiers:
@@ -323,23 +314,6 @@ async def _post_json(session: aiohttp.ClientSession, url: URL, payload: dict[str
         return resp.status, text
 
 
-async def send_operation(
-    hass: HomeAssistant,
-    session: aiohttp.ClientSession,
-    entry_id: str,
-    payload: dict[str, Any],
-) -> None:
-    csrf = hass.data[DOMAIN][entry_id]["_csrf"]
-    url = URL_ADD_OPERATION.update_query({"_csrf": csrf})
-
-    status, text = await _post_json(session, url, payload)
-    if status != 200:
-        _LOGGER.error("Operation failed status=%s body=%s payload=%s", status, text[:200], payload)
-        if status in (401, 403) or text.strip() in ("Logout", "fail"):
-            raise ConfigEntryAuthFailed(f"Session invalid while sending operation: {status} '{text.strip()}'")
-        raise HomeAssistantError(f"SmartThings Find operation failed: {status}")
-
-
 async def get_device_location(
     hass: HomeAssistant,
     session: aiohttp.ClientSession,
@@ -360,6 +334,7 @@ async def get_device_location(
             or (dev_data.get("deviceTypeCode") != "TAG" and hass.data[DOMAIN][entry_id].get(CONF_ACTIVE_MODE_OTHERS))
         )
 
+        # 액티브 모드면 "위치 갱신 요청"을 먼저 전송 (best-effort)
         if active:
             await _post_json(session, URL_ADD_OPERATION.update_query({"_csrf": csrf}), update_payload)
 
@@ -439,32 +414,18 @@ async def get_device_location(
                             used_op = op
                             res["location_found"] = True
 
+            # 배터리(best-effort)
+            try:
+                res["battery_level"] = get_battery_level(dev_name, ops)
+            except Exception:
+                res["battery_level"] = None
+
             res["used_op"] = used_op
             res["used_loc"] = used_loc
             return res
 
     except ConfigEntryAuthFailed:
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         _LOGGER.error("[%s] Exception in get_device_location: %s", dev_name, e, exc_info=True)
         return None
-
-
-async def ring_device(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str, dev_data: dict[str, Any], start: bool) -> None:
-    payload = {
-        "dvceId": dev_data.get("dvceID"),
-        "operation": OP_RING,
-        "usrId": dev_data.get("usrId"),
-        "status": "start" if start else "stop",
-        "lockMessage": "SmartThings Find is trying to find this device.",
-    }
-    await send_operation(hass, session, entry_id, payload)
-
-
-async def phone_action(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str, dev_data: dict[str, Any], op: str) -> None:
-    payload = {
-        "dvceId": dev_data.get("dvceID"),
-        "operation": op,
-        "usrId": dev_data.get("usrId"),
-    }
-    await send_operation(hass, session, entry_id, payload)
