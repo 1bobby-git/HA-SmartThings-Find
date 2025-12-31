@@ -6,9 +6,8 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.config_entries import ConfigFlowResult, OptionsFlowWithConfigEntry
-from homeassistant.core import callback
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResult
 
 from .const import (
     DOMAIN,
@@ -19,123 +18,154 @@ from .const import (
     CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT,
     CONF_ACTIVE_MODE_OTHERS,
     CONF_ACTIVE_MODE_OTHERS_DEFAULT,
-    CONF_ST_DEVICE_ID,
-    CONF_ST_IDENTIFIER,
 )
-from .utils import (
+
+# utils는 레포에 이미 있는 함수 시그니처를 최대한 존중해서 호출함
+# (0.3.16 이후 fetch_csrf/get_devices가 entry_id를 받는 형태로 바뀐 것으로 보임)
+from .utils import (  # type: ignore
     parse_cookie_header,
     apply_cookies_to_session,
     fetch_csrf,
     make_session,
-    list_smartthings_devices_for_ui,
-    get_smartthings_identifier_value_by_device_id,
+    get_devices,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-STF_URL = "https://smartthingsfind.samsung.com"
+
+STEP_USER_DATA_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_COOKIE): str,
+    }
+)
+
+STEP_OPTIONS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_UPDATE_INTERVAL, default=CONF_UPDATE_INTERVAL_DEFAULT): vol.Coerce(int),
+        vol.Optional(CONF_ACTIVE_MODE_SMARTTAGS, default=CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT): bool,
+        vol.Optional(CONF_ACTIVE_MODE_OTHERS, default=CONF_ACTIVE_MODE_OTHERS_DEFAULT): bool,
+    }
+)
+
+
+async def _validate_cookie(hass: HomeAssistant, cookie_line: str, flow_id: str) -> None:
+    """Validate cookie by performing a minimal auth-required flow."""
+    cookies = parse_cookie_header(cookie_line)
+    if not cookies:
+        raise ValueError("invalid_cookie")
+
+    session = make_session(hass)
+    try:
+        apply_cookies_to_session(session, cookies)
+
+        # 0.3.16+ 기준: fetch_csrf(hass, session, entry_id) 형태로 보임
+        await fetch_csrf(hass, session, flow_id)
+
+        # devices fetch로 실제 로그인/권한 확인
+        await get_devices(hass, session, flow_id)
+
+    finally:
+        await session.close()
 
 
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Config flow for SmartThings Find."""
+    """Handle a config flow for SmartThings Find."""
 
     VERSION = 1
-    CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLL
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}
 
         if user_input is not None:
             cookie_line = (user_input.get(CONF_COOKIE) or "").strip()
-            cookies = parse_cookie_header(cookie_line)
 
             if not cookie_line:
-                errors["base"] = "missing_cookie"
-            elif not cookies:
-                errors["base"] = "invalid_cookie"
+                errors[CONF_COOKIE] = "required"
             else:
-                session = make_session(self.hass)
                 try:
-                    apply_cookies_to_session(session, cookies)
-                    await fetch_csrf(self.hass, session, None)
-                    return self.async_create_entry(
-                        title="SmartThings Find",
-                        data={CONF_COOKIE: cookie_line},
-                    )
-                except ConfigEntryAuthFailed as e:
-                    _LOGGER.warning("Cookie auth failed: %s", e)
+                    # flow_id를 entry_id처럼 써서 csrf/devices 호출 (시그니처 호환 목적)
+                    await _validate_cookie(self.hass, cookie_line, getattr(self, "flow_id", "config_flow"))
+                except ValueError as e:
+                    if str(e) == "invalid_cookie":
+                        errors["base"] = "invalid_cookie"
+                    else:
+                        errors["base"] = "unknown"
+                except Exception:  # pylint: disable=broad-except
+                    _LOGGER.exception("Cookie validation failed")
                     errors["base"] = "auth_failed"
-                except Exception as e:
-                    _LOGGER.exception("Unexpected error validating cookie auth: %s", e)
-                    errors["base"] = "unknown"
-                finally:
-                    await session.close()
 
-        schema = vol.Schema({vol.Required(CONF_COOKIE): str})
+            if not errors:
+                # ✅ SmartThings ID 선택 단계 제거: 바로 엔트리 생성
+                return self.async_create_entry(
+                    title="SmartThings Find",
+                    data={
+                        CONF_COOKIE: cookie_line,
+                    },
+                    options={
+                        CONF_UPDATE_INTERVAL: CONF_UPDATE_INTERVAL_DEFAULT,
+                        CONF_ACTIVE_MODE_SMARTTAGS: CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT,
+                        CONF_ACTIVE_MODE_OTHERS: CONF_ACTIVE_MODE_OTHERS_DEFAULT,
+                    },
+                )
 
         return self.async_show_form(
             step_id="user",
-            data_schema=schema,
+            data_schema=STEP_USER_DATA_SCHEMA,
             errors=errors,
-            description_placeholders={"stf_url": STF_URL},
         )
 
-    async def async_step_reauth(self, _data: dict[str, Any] | None = None) -> ConfigFlowResult:
-        return await self.async_step_user()
-
     @staticmethod
-    @callback
+    @config_entries.callback
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
         return SmartThingsFindOptionsFlowHandler(config_entry)
 
 
-class SmartThingsFindOptionsFlowHandler(OptionsFlowWithConfigEntry):
-    """Options flow (0.3.15 setter-crash fix + 0.3.16 device mapping)."""
+class SmartThingsFindOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow for SmartThings Find."""
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    def __init__(self, entry: config_entries.ConfigEntry) -> None:
+        self._entry = entry
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        errors: dict[str, str] = {}
+
         if user_input is not None:
-            # ✅ device_registry id -> store identifier string (JSON safe)
-            st_device_id = (user_input.get(CONF_ST_DEVICE_ID) or "").strip()
-            if st_device_id:
-                st_ident_value = get_smartthings_identifier_value_by_device_id(self.hass, st_device_id)
-                if st_ident_value:
-                    user_input[CONF_ST_IDENTIFIER] = st_ident_value
-                else:
-                    user_input.pop(CONF_ST_IDENTIFIER, None)
-            else:
-                user_input.pop(CONF_ST_IDENTIFIER, None)
+            # 업데이트 간격 sanity check
+            interval = user_input.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
+            try:
+                interval = int(interval)
+                if interval < 10:
+                    errors["base"] = "interval_too_small"
+            except Exception:  # pylint: disable=broad-except
+                errors["base"] = "invalid_interval"
 
-            return self.async_create_entry(title="", data=user_input)
+            if not errors:
+                return self.async_create_entry(
+                    title="",
+                    data={
+                        CONF_UPDATE_INTERVAL: interval,
+                        CONF_ACTIVE_MODE_SMARTTAGS: bool(user_input.get(CONF_ACTIVE_MODE_SMARTTAGS)),
+                        CONF_ACTIVE_MODE_OTHERS: bool(user_input.get(CONF_ACTIVE_MODE_OTHERS)),
+                    },
+                )
 
-        # Build SmartThings device dropdown
-        st_devices = list_smartthings_devices_for_ui(self.hass)
-        st_map = {"": "-- (선택 안 함) --"}
-        for dev_id, label in st_devices:
-            st_map[dev_id] = label
-
+        # defaults from existing entry
+        options = dict(self._entry.options)
         schema = vol.Schema(
             {
-                # ✅ 0.3.16: 공식 SmartThings 기기 병합 선택
-                vol.Optional(
-                    CONF_ST_DEVICE_ID,
-                    default=self.options.get(CONF_ST_DEVICE_ID, ""),
-                ): vol.In(st_map),
-
                 vol.Optional(
                     CONF_UPDATE_INTERVAL,
-                    default=self.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
-                ): vol.All(vol.Coerce(int), vol.Clamp(min=30)),
-
+                    default=options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
+                ): vol.Coerce(int),
                 vol.Optional(
                     CONF_ACTIVE_MODE_SMARTTAGS,
-                    default=self.options.get(CONF_ACTIVE_MODE_SMARTTAGS, CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT),
+                    default=options.get(CONF_ACTIVE_MODE_SMARTTAGS, CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT),
                 ): bool,
-
                 vol.Optional(
                     CONF_ACTIVE_MODE_OTHERS,
-                    default=self.options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT),
+                    default=options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT),
                 ): bool,
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
