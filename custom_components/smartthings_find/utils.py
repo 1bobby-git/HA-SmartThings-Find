@@ -9,11 +9,11 @@ from typing import Any
 
 import aiohttp
 import pytz
-from http.cookies import CookieError, SimpleCookie
+from http.cookies import SimpleCookie, CookieError
 from yarl import URL
 
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import device_registry
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.entity import DeviceInfo
@@ -21,9 +21,11 @@ from homeassistant.helpers.entity import DeviceInfo
 from .const import (
     DOMAIN,
     BATTERY_LEVELS,
+    CONF_COOKIE,
     CONF_ACTIVE_MODE_SMARTTAGS,
     CONF_ACTIVE_MODE_OTHERS,
     CONF_ST_IDENTIFIER,
+    OP_RING,
     OP_CHECK_CONNECTION_WITH_LOCATION,
     OP_CHECK_CONNECTION,
 )
@@ -101,14 +103,45 @@ def make_session(hass: HomeAssistant) -> aiohttp.ClientSession:
     )
 
 
+def _mask_set_cookie_headers(set_cookie_values: list[str]) -> list[str]:
+    """Return only cookie names, mask values."""
+    masked: list[str] = []
+    for raw in set_cookie_values:
+        first = raw.split(";", 1)[0].strip()
+        if "=" in first:
+            name = first.split("=", 1)[0].strip()
+            masked.append(f"{name}=***")
+        else:
+            masked.append("***")
+    return masked
+
+
+def _cookiejar_to_cookie_header(session: aiohttp.ClientSession) -> str:
+    """Serialize current cookie jar for STF_BASE to a Cookie header string."""
+    filtered = session.cookie_jar.filter_cookies(STF_BASE)
+    parts: list[str] = []
+    for k, morsel in filtered.items():
+        parts.append(f"{k}={morsel.value}")
+    return "; ".join(parts)
+
+
 async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str | None = None) -> str:
     """
     Calls chkLogin.do and returns CSRF from header "_csrf".
     If entry_id is given, also stores it in hass.data[DOMAIN][entry_id]["_csrf"].
+    Additionally, if cookie jar changed and entry exists, persist updated cookie header.
     """
     async with session.get(URL_CHK_LOGIN) as resp:
         text = (await resp.text()).strip()
         csrf = resp.headers.get("_csrf")
+
+        # Debug: Set-Cookie (mask values)
+        try:
+            sc = resp.headers.getall("Set-Cookie", [])  # type: ignore[attr-defined]
+        except Exception:
+            sc = []
+        if sc:
+            _LOGGER.debug("chkLogin.do Set-Cookie: %s", _mask_set_cookie_headers(sc))
 
         _LOGGER.debug("chkLogin.do status=%s csrf=%s body=%s", resp.status, bool(csrf), text[:200])
 
@@ -125,15 +158,30 @@ async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_
         if entry_id is not None:
             hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})["_csrf"] = csrf
 
+            # Persist refreshed cookies if they changed (best-effort).
+            # Only attempt when entry_id looks like a real config entry id.
+            entry = hass.config_entries.async_get_entry(entry_id)
+            if entry is not None:
+                new_cookie_header = _cookiejar_to_cookie_header(session)
+                if new_cookie_header:
+                    old_cookie_header = (entry.data.get(CONF_COOKIE) or "").strip()
+                    if new_cookie_header.strip() != old_cookie_header:
+                        _LOGGER.debug("Cookie jar changed -> updating stored cookie header (names only): %s", list(parse_cookie_header(new_cookie_header).keys()))
+                        new_data = dict(entry.data)
+                        new_data[CONF_COOKIE] = new_cookie_header
+                        hass.config_entries.async_update_entry(entry, data=new_data)
+
         return csrf
 
 
 # =========================
-# SmartThings device registry mapping helpers (optional)
+# 0.3.16+ SmartThings mapping helpers
 # =========================
 
 def list_smartthings_devices_for_ui(hass: HomeAssistant) -> list[tuple[str, str]]:
-    """Returns list of (device_registry_id, label) for SmartThings official devices."""
+    """
+    Returns list of (device_registry_id, label) for SmartThings official devices.
+    """
     dr = device_registry.async_get(hass)
     items: list[tuple[str, str]] = []
 
@@ -182,7 +230,9 @@ def _decode_smartthings_identifier(value: Any) -> tuple[str, str] | None:
 
 
 def get_smartthings_identifier_value_by_device_id(hass: HomeAssistant, device_id: str) -> str:
-    """device_registry DeviceEntry.id -> first smartthings identifier -> encoded string"""
+    """
+    device_registry DeviceEntry.id -> first smartthings identifier -> encoded string
+    """
     dr = device_registry.async_get(hass)
     dev = dr.devices.get(device_id)
     if not dev or not dev.identifiers:
@@ -291,27 +341,27 @@ def get_battery_level(_dev_name: str, ops: list[dict[str, Any]]) -> int | None:
     return None
 
 
-def get_sub_location(ops: list[dict[str, Any]], sub_device_name: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    if not ops or not sub_device_name:
-        return {}, {}
-    for op in ops:
-        enc = op.get("encLocation", {})
-        if isinstance(enc, dict) and sub_device_name in enc:
-            loc = enc[sub_device_name]
-            sub_loc = {
-                "latitude": float(loc.get("latitude")),
-                "longitude": float(loc.get("longitude")),
-                "gps_accuracy": calc_gps_accuracy(loc.get("horizontalUncertainty"), loc.get("verticalUncertainty")),
-                "gps_date": parse_stf_date(loc.get("gpsUtcDt")),
-            }
-            return op, sub_loc
-    return {}, {}
-
-
 async def _post_json(session: aiohttp.ClientSession, url: URL, payload: dict[str, Any]) -> tuple[int, str]:
     async with session.post(url, json=payload, headers={"Accept": "application/json"}) as resp:
         text = await resp.text()
         return resp.status, text
+
+
+async def send_operation(
+    hass: HomeAssistant,
+    session: aiohttp.ClientSession,
+    entry_id: str,
+    payload: dict[str, Any],
+) -> None:
+    csrf = hass.data[DOMAIN][entry_id]["_csrf"]
+    url = URL_ADD_OPERATION.update_query({"_csrf": csrf})
+
+    status, text = await _post_json(session, url, payload)
+    if status != 200:
+        _LOGGER.error("Operation failed status=%s body=%s payload=%s", status, text[:200], payload)
+        if status in (401, 403) or text.strip() in ("Logout", "fail"):
+            raise ConfigEntryAuthFailed(f"Session invalid while sending operation: {status} '{text.strip()}'")
+        raise HomeAssistantError(f"SmartThings Find operation failed: {status}")
 
 
 async def get_device_location(
@@ -334,7 +384,6 @@ async def get_device_location(
             or (dev_data.get("deviceTypeCode") != "TAG" and hass.data[DOMAIN][entry_id].get(CONF_ACTIVE_MODE_OTHERS))
         )
 
-        # 액티브 모드면 "위치 갱신 요청"을 먼저 전송 (best-effort)
         if active:
             await _post_json(session, URL_ADD_OPERATION.update_query({"_csrf": csrf}), update_payload)
 
@@ -414,18 +463,23 @@ async def get_device_location(
                             used_op = op
                             res["location_found"] = True
 
-            # 배터리(best-effort)
-            try:
-                res["battery_level"] = get_battery_level(dev_name, ops)
-            except Exception:
-                res["battery_level"] = None
-
             res["used_op"] = used_op
             res["used_loc"] = used_loc
             return res
 
     except ConfigEntryAuthFailed:
         raise
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _LOGGER.error("[%s] Exception in get_device_location: %s", dev_name, e, exc_info=True)
         return None
+
+
+async def ring_device(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str, dev_data: dict[str, Any], start: bool) -> None:
+    payload = {
+        "dvceId": dev_data.get("dvceID"),
+        "operation": OP_RING,
+        "usrId": dev_data.get("usrId"),
+        "status": "start" if start else "stop",
+        "lockMessage": "SmartThings Find is trying to find this device.",
+    }
+    await send_operation(hass, session, entry_id, payload)
