@@ -27,6 +27,9 @@ class SmartThingsFindTracker(CoordinatorEntity, TrackerEntity):
     _attr_source_type = SourceType.GPS
     _attr_has_entity_name = True
 
+    # ✅ 스싱파인더 아이콘은 device_tracker에 적용
+    _attr_icon = "mdi:nfc-search-variant"
+
     def __init__(self, coordinator, dev: dict[str, Any]) -> None:
         super().__init__(coordinator)
         self.dev = dev
