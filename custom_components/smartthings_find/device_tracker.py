@@ -39,7 +39,7 @@ class SmartThingsFindTracker(CoordinatorEntity, TrackerEntity):
         self._attr_name = None
         self._attr_device_info = dev["ha_dev_info"]
 
-        # ✅ STF 기기 아이콘(컬러)이 있으면 entity_picture로 적용
+        # ✅ entity_picture가 아이콘보다 체감적으로 “확실히” 적용됨
         icons = dev["data"].get("icons") or {}
         colored_icon = icons.get("coloredIcon") or icons.get("icon")
         if colored_icon:
@@ -47,7 +47,6 @@ class SmartThingsFindTracker(CoordinatorEntity, TrackerEntity):
 
     @property
     def icon(self) -> str | None:
-        # 일부 화면에서 _attr_icon이 무시되는 경우가 있어 property로도 제공
         return "mdi:nfc-search-variant"
 
     @property

@@ -27,30 +27,35 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up SmartThings Find buttons.
+    """Set up SmartThings Find button entities (0.3.22.1 stable).
 
-    0.3.22.1 policy:
-    - Always expose Ring (never disappear).
-    - Expose other website actions as best-effort (even if some devices reject them).
-    - Non-tag devices also get phone actions (best-effort).
+    Web device-card buttons (from HTML):
+    - Ring
+    - Lost Mode
+    - Track Location
+    - Erase Data
+    - Extend Battery
+    Plus the refresh/connection-check button:
+    - Update Location
+
+    Policy:
+    - Always expose web-visible actions in HA (best-effort).
+    - Stop Ring: only for TAG devices (safer 'supported device only' behavior).
     """
     devices = hass.data[DOMAIN][entry.entry_id]["devices"]
     entities: list[ButtonEntity] = []
 
     for device in devices:
         dev_data = device["data"]
-        dev_type = dev_data.get("deviceTypeCode")  # "TAG" or others
+        dev_type = dev_data.get("deviceTypeCode")  # "TAG" or others (phone/watch/etc)
 
-        # ✅ Always add Ring start (stable)
+        # ✅ Always show Ring (web has it)
         entities.append(RingStartButton(hass, entry.entry_id, device))
 
-        # ✅ Stop ring (best-effort)
-        entities.append(RingStopButton(hass, entry.entry_id, device))
-
-        # ✅ Update location (best-effort)
+        # ✅ Website has refresh "connection check" => expose Update Location
         entities.append(UpdateLocationButton(hass, entry.entry_id, device))
 
-        # ✅ Phone actions only for non-tags (best-effort)
+        # ✅ Non-tag devices: web shows these actions in grid
         if dev_type != "TAG":
             entities.append(PhoneActionButton(hass, entry.entry_id, device, OP_LOCK, "Lost Mode", "mdi:lock-alert"))
             entities.append(
@@ -64,6 +69,10 @@ async def async_setup_entry(
                     hass, entry.entry_id, device, OP_EXTEND_BATTERY, "Extend Battery", "mdi:battery-plus-outline"
                 )
             )
+
+        # ✅ Stop Ring: typically meaningful for tags (ring continues until stopped)
+        if dev_type == "TAG":
+            entities.append(RingStopButton(hass, entry.entry_id, device))
 
     async_add_entities(entities)
 
@@ -81,10 +90,9 @@ class _STFOperationButton(ButtonEntity):
         self._dvce_id = data.get("dvceID")
         self._usr_id = data.get("usrId")
 
-        # DeviceInfo prepared by integration
         self._attr_device_info = device.get("ha_dev_info")
 
-        # Picture if available (more reliable than icon in some HA views)
+        # Picture if available (works better than icon in some HA views)
         icons = data.get("icons") or {}
         colored_icon = icons.get("coloredIcon") or icons.get("icon")
         if colored_icon:
@@ -130,7 +138,6 @@ class _STFOperationButton(ButtonEntity):
                 if response.status == 200:
                     return True
 
-                # refresh CSRF if failed (cookie/CSRF invalid may happen)
                 _LOGGER.warning("Operation %s failed (HTTP %s). Refreshing CSRF.", operation, response.status)
                 await fetch_csrf(self.hass, session, self._entry_id)
                 return False
@@ -141,7 +148,7 @@ class _STFOperationButton(ButtonEntity):
 
 
 class RingStartButton(_STFOperationButton):
-    """Ring start."""
+    """Web: deviceCard-ring (소리 울리기)"""
 
     _attr_icon = "mdi:volume-high"
 
@@ -163,7 +170,7 @@ class RingStartButton(_STFOperationButton):
 
 
 class RingStopButton(_STFOperationButton):
-    """Ring stop (best-effort)."""
+    """Best-effort stop ringing (TAG only)."""
 
     _attr_icon = "mdi:volume-mute"
 
@@ -175,14 +182,14 @@ class RingStopButton(_STFOperationButton):
         self._attr_name = f"{model_name} Stop Ring"
 
     async def async_press(self) -> None:
-        # Best-effort: many devices accept RING + status=stop
+        # Many backends accept RING + status=stop as stop-ring
         await self._post_operation(OP_RING, {"status": "stop"})
 
 
 class UpdateLocationButton(_STFOperationButton):
-    """Website action: Update location (best-effort)."""
+    """Web: refresh button (connection check / 위치 업데이트)"""
 
-    _attr_icon = "mdi:map-marker-radius"
+    _attr_icon = "mdi:refresh"
 
     def __init__(self, hass: HomeAssistant, entry_id: str, device: dict[str, Any]) -> None:
         super().__init__(hass, entry_id, device)
@@ -196,7 +203,12 @@ class UpdateLocationButton(_STFOperationButton):
 
 
 class PhoneActionButton(_STFOperationButton):
-    """Phone actions (best-effort)."""
+    """Web grid actions for phones/etc:
+    - deviceCard-lock
+    - deviceCard-trackLoc
+    - deviceCard-wipe
+    - deviceCard-powerSaving
+    """
 
     def __init__(self, hass: HomeAssistant, entry_id: str, device: dict[str, Any], op: str, label: str, icon: str):
         super().__init__(hass, entry_id, device)
