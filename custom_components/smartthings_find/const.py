@@ -7,7 +7,8 @@ from typing import Final
 DOMAIN: Final = "smartthings_find"
 
 # Home Assistant platforms
-PLATFORMS: Final[list[str]] = ["device_tracker", "sensor", "button"]
+# ✅ 0.3.22: switch 추가 (찾으면 알림받기 토글)
+PLATFORMS: Final[list[str]] = ["device_tracker", "sensor", "button", "switch"]
 
 # ----------------------------
 # Config / Options keys
@@ -42,7 +43,6 @@ DATA_KEEPALIVE_CANCEL: Final = "keepalive_cancel"
 # ----------------------------
 # Battery mapping
 # ----------------------------
-# ✅ Some modules import BATTERY_LEVELS (must exist)
 BATTERY_LEVELS: Final[dict[str, int]] = {
     "FULL": 100,
     "HIGH": 80,
@@ -53,8 +53,6 @@ BATTERY_LEVELS: Final[dict[str, int]] = {
     "EMPTY": 0,
     "NONE": 0,
 }
-
-# Alias for older code that expects BATTERY_LEVEL_MAP
 BATTERY_LEVEL_MAP: Final[dict[str, int]] = dict(BATTERY_LEVELS)
 
 # ----------------------------
@@ -62,21 +60,16 @@ BATTERY_LEVEL_MAP: Final[dict[str, int]] = dict(BATTERY_LEVELS)
 # ----------------------------
 OP_RING: Final = "RING"
 
-# ✅ 이번 에러 원인: OP_CHECK_CONNECTION missing
+# check / location update
 OP_CHECK_CONNECTION: Final = "CHECK_CONNECTION"
-
-# Variant used by some device types / endpoints
 OP_CHECK_CONNECTION_WITH_LOCATION: Final = "CHECK_CONNECTION_WITH_LOCATION"
 
-# ✅ 이전 에러 원인: OP_LOCK missing
+# phone actions (best-effort)
 OP_LOCK: Final = "LOCK"
-
-# Other operations (availability depends on device/account)
 OP_ERASE: Final = "ERASE"
 OP_TRACK: Final = "TRACK_LOCATION"
 OP_EXTEND_BATTERY: Final = "EXTEND_BATTERY"
 
-# STF responses can use different keys for operation lists
 OPERATION_LIST_KEYS: Final[tuple[str, ...]] = (
     "supportOperations",
     "supportOperationList",
