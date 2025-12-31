@@ -6,8 +6,7 @@ from typing import Final
 
 DOMAIN: Final = "smartthings_find"
 
-# Home Assistant platforms
-# ✅ 0.3.22: switch 추가 (찾으면 알림받기 토글)
+# ✅ 0.3.22.1: switch 추가 (찾으면 알림 받기)
 PLATFORMS: Final[list[str]] = ["device_tracker", "sensor", "button", "switch"]
 
 # ----------------------------
@@ -56,7 +55,7 @@ BATTERY_LEVELS: Final[dict[str, int]] = {
 BATTERY_LEVEL_MAP: Final[dict[str, int]] = dict(BATTERY_LEVELS)
 
 # ----------------------------
-# SmartThings Find operation codes
+# SmartThings Find operation codes (best-effort)
 # ----------------------------
 OP_RING: Final = "RING"
 
@@ -70,6 +69,23 @@ OP_ERASE: Final = "ERASE"
 OP_TRACK: Final = "TRACK_LOCATION"
 OP_EXTEND_BATTERY: Final = "EXTEND_BATTERY"
 
+# ✅ 0.3.22.1: "찾으면 알림 받기" (Notify when found) best-effort candidates
+# 실제 op 값은 계정/지역/기기별로 다를 수 있어 후보를 순차 시도한다.
+NOTIFY_WHEN_FOUND_ON_OPS: Final[list[str]] = [
+    "NOTIFY_WHEN_FOUND",
+    "NOTIFY_FOUND",
+    "NOTIFY_WHEN_FOUND_ON",
+    "NOTIFY_WHEN_FOUND_START",
+    "FOUND_NOTIFY_ON",
+]
+NOTIFY_WHEN_FOUND_OFF_OPS: Final[list[str]] = [
+    "NOTIFY_WHEN_FOUND_OFF",
+    "NOTIFY_WHEN_FOUND_STOP",
+    "FOUND_NOTIFY_OFF",
+    "CANCEL_NOTIFY_WHEN_FOUND",
+]
+
+# Optional keys where support operation list might appear (kept for future)
 OPERATION_LIST_KEYS: Final[tuple[str, ...]] = (
     "supportOperations",
     "supportOperationList",

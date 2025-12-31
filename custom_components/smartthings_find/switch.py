@@ -9,63 +9,74 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN, OPERATION_LIST_KEYS
+from .const import (
+    DOMAIN,
+    NOTIFY_WHEN_FOUND_ON_OPS,
+    NOTIFY_WHEN_FOUND_OFF_OPS,
+)
 from .utils import fetch_csrf
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def _extract_supported_operations(dev_data: dict[str, Any]) -> set[str]:
-    ops: set[str] = set()
-    for key in OPERATION_LIST_KEYS:
-        raw = dev_data.get(key)
-        if not raw:
-            continue
-        if isinstance(raw, list):
-            for item in raw:
-                if isinstance(item, dict):
-                    t = item.get("oprnType") or item.get("operation") or item.get("type") or item.get("code")
-                    support = item.get("supportYn") or item.get("supported") or item.get("support")
-                    if support is False or str(support).upper() in ("N", "NO", "FALSE", "0"):
-                        continue
-                    if t:
-                        ops.add(str(t))
-                else:
-                    ops.add(str(item))
-            if ops:
-                break
-    return ops
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up 'Notify when found' switches.
+
+    0.3.22.1 policy:
+    - Web에 보이는 토글을 HA에도 노출하는 것이 목적
+    - 기기별/계정별 op 값이 다를 수 있어 best-effort로 동작
+    """
+    devices = hass.data[DOMAIN][entry.entry_id]["devices"]
+    entities: list[SwitchEntity] = []
+
+    for device in devices:
+        entities.append(NotifyWhenFoundSwitch(hass, entry.entry_id, device))
+
+    async_add_entities(entities)
 
 
-def _pick_notify_when_found_ops(supported_ops: set[str]) -> tuple[str | None, str | None]:
-    """Try to find ON/OFF operation codes for 'notify when found'."""
-    # Heuristic: any op containing both NOTIFY and FOUND
-    cands = [op for op in supported_ops if "NOTIFY" in op.upper() and "FOUND" in op.upper()]
-    if not cands:
-        return None, None
+class NotifyWhenFoundSwitch(SwitchEntity, RestoreEntity):
+    """'찾으면 알림 받기' (best-effort)."""
 
-    def score_on(op: str) -> int:
-        u = op.upper()
-        return (10 if "ON" in u else 0) + (5 if "START" in u else 0) + (1 if "ENABLE" in u else 0)
+    _attr_icon = "mdi:bell-badge-outline"
+    _attr_assumed_state = True
 
-    def score_off(op: str) -> int:
-        u = op.upper()
-        return (10 if "OFF" in u else 0) + (8 if "STOP" in u else 0) + (6 if "CANCEL" in u else 0) + (1 if "DISABLE" in u else 0)
-
-    op_on = sorted(cands, key=score_on, reverse=True)[0]
-    op_off_candidates = sorted(cands, key=score_off, reverse=True)
-    op_off = op_off_candidates[0] if score_off(op_off_candidates[0]) > 0 else None
-
-    return op_on, op_off
-
-
-class _STFOperationHelper:
     def __init__(self, hass: HomeAssistant, entry_id: str, device: dict[str, Any]) -> None:
         self.hass = hass
         self._entry_id = entry_id
-        self._dev_data = device["data"]
-        self._dvce_id = self._dev_data.get("dvceID")
-        self._usr_id = self._dev_data.get("usrId")
+
+        data = device["data"]
+        self.device = data
+
+        self._dvce_id = data.get("dvceID")
+        self._usr_id = data.get("usrId")
+
+        model_name = data.get("modelName", "SmartThings Find Device")
+        self._attr_unique_id = f"stf_notify_when_found_{self._dvce_id}"
+        self._attr_name = f"{model_name} Notify When Found"
+
+        self._attr_device_info = device.get("ha_dev_info")
+
+        icons = data.get("icons") or {}
+        colored_icon = icons.get("coloredIcon") or icons.get("icon")
+        if colored_icon:
+            self._attr_entity_picture = colored_icon
+
+        self._is_on = False
+
+    @property
+    def is_on(self) -> bool:
+        return self._is_on
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state is not None and last_state.state in ("on", "off"):
+            self._is_on = last_state.state == "on"
 
     async def _get_session_and_csrf(self):
         entry_data = self.hass.data[DOMAIN].get(self._entry_id, {})
@@ -82,88 +93,53 @@ class _STFOperationHelper:
 
         return session, csrf_token
 
-    async def post_operation(self, operation: str, extra: dict[str, Any] | None = None) -> bool:
-        session, csrf = await self._get_session_and_csrf()
-        if session is None or not csrf:
+    async def _post_operation(self, operation: str, extra: dict[str, Any] | None = None) -> bool:
+        session, csrf_token = await self._get_session_and_csrf()
+        if session is None or not csrf_token:
             return False
 
         payload: dict[str, Any] = {"dvceId": self._dvce_id, "operation": operation, "usrId": self._usr_id}
         if extra:
             payload.update(extra)
 
-        url = f"https://smartthingsfind.samsung.com/dm/addOperation.do?_csrf={csrf}"
+        url = f"https://smartthingsfind.samsung.com/dm/addOperation.do?_csrf={csrf_token}"
 
         try:
-            async with session.post(url, json=payload) as response:
-                if response.status == 200:
+            async with session.post(url, json=payload) as resp:
+                txt = await resp.text()
+                _LOGGER.debug("Notify op=%s http=%s payload=%s resp=%s", operation, resp.status, payload, txt)
+
+                if resp.status == 200:
                     return True
-                _LOGGER.warning("Operation %s failed (HTTP %s).", operation, response.status)
+
+                # csrf refresh (best-effort)
                 await fetch_csrf(self.hass, session, self._entry_id)
                 return False
         except Exception as err:
-            _LOGGER.exception("Exception while posting operation %s: %s", operation, err)
+            _LOGGER.exception("Notify operation error op=%s: %s", operation, err)
             return False
 
-
-async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
-) -> None:
-    devices = hass.data[DOMAIN][entry.entry_id]["devices"]
-    entities: list[SwitchEntity] = []
-
-    for device in devices:
-        dev_data = device["data"]
-        supported_ops = _extract_supported_operations(dev_data)
-        op_on, op_off = _pick_notify_when_found_ops(supported_ops)
-
-        # only add if we found at least an ON operation
-        if op_on:
-            entities.append(NotifyWhenFoundSwitch(hass, entry.entry_id, device, op_on, op_off))
-
-    async_add_entities(entities)
-
-
-class NotifyWhenFoundSwitch(_STFOperationHelper, SwitchEntity, RestoreEntity):
-    """'Notify me when it's found' toggle (best-effort / optimistic)."""
-
-    _attr_icon = "mdi:bell-badge-outline"
-    _attr_assumed_state = True
-
-    def __init__(self, hass: HomeAssistant, entry_id: str, device: dict[str, Any], op_on: str, op_off: str | None):
-        _STFOperationHelper.__init__(self, hass, entry_id, device)
-        self._attr_device_info = device.get("ha_dev_info")
-
-        self._op_on = op_on
-        self._op_off = op_off
-
-        model_name = device["data"].get("modelName", "SmartThings Find Device")
-        self._attr_unique_id = f"stf_notify_when_found_{self._dvce_id}"
-        self._attr_name = f"{model_name} Notify When Found"
-
-        self._is_on = False
-
-    @property
-    def is_on(self) -> bool:
-        return self._is_on
-
-    async def async_added_to_hass(self) -> None:
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
-        if last_state is not None and last_state.state in ("on", "off"):
-            self._is_on = last_state.state == "on"
+    async def _try_ops(self, ops: list[str], status: str) -> bool:
+        """Try multiple operations until one succeeds."""
+        for op in ops:
+            ok = await self._post_operation(op, {"status": status})
+            if ok:
+                _LOGGER.info("Notify When Found success op=%s status=%s device=%s", op, status, self._dvce_id)
+                return True
+        _LOGGER.warning("Notify When Found failed for all candidates status=%s device=%s", status, self._dvce_id)
+        return False
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        ok = await self.post_operation(self._op_on, {"status": "start"})
+        ok = await self._try_ops(NOTIFY_WHEN_FOUND_ON_OPS, "start")
         if ok:
             self._is_on = True
             self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        if self._op_off:
-            ok = await self.post_operation(self._op_off, {"status": "start"})
-        else:
-            # fallback: try stopping the same op
-            ok = await self.post_operation(self._op_on, {"status": "stop"})
+        # 먼저 OFF 후보를 시도하고, 없으면 ON 후보를 stop으로 시도
+        ok = await self._try_ops(NOTIFY_WHEN_FOUND_OFF_OPS, "start")
+        if not ok:
+            ok = await self._try_ops(NOTIFY_WHEN_FOUND_ON_OPS, "stop")
 
         if ok:
             self._is_on = False
