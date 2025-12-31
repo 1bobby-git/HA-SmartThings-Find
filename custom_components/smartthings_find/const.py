@@ -6,7 +6,7 @@ from typing import Final
 
 DOMAIN: Final = "smartthings_find"
 
-# (정리) 현재 유지하는 최소 플랫폼
+# 현재 안정 버전: 최소 엔티티만 유지
 PLATFORMS: Final[list[str]] = ["device_tracker", "sensor", "button"]
 
 # ----------------------------
@@ -21,7 +21,6 @@ CONF_JSESSIONID: Final = "jsessionid"
 CONF_UPDATE_INTERVAL: Final = "update_interval"
 CONF_UPDATE_INTERVAL_DEFAULT: Final = 120  # seconds
 
-# Options: Active mode toggles (stored as bool)
 CONF_ACTIVE_MODE_SMARTTAGS: Final = "active_mode_smarttags"
 CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT: Final = True
 
@@ -56,8 +55,20 @@ BATTERY_LEVELS: Final[dict[str, int]] = {
 BATTERY_LEVEL_MAP: Final[dict[str, int]] = dict(BATTERY_LEVELS)
 
 # ----------------------------
-# SmartThings Find operation codes (minimal set)
+# SmartThings Find operation codes (minimal)
 # ----------------------------
 OP_RING: Final = "RING"
 OP_CHECK_CONNECTION: Final = "CHECK_CONNECTION"
 OP_CHECK_CONNECTION_WITH_LOCATION: Final = "CHECK_CONNECTION_WITH_LOCATION"
+
+# Optional keys where support operation list might appear (kept for future)
+OPERATION_LIST_KEYS: Final[tuple[str, ...]] = (
+    "supportOperations",
+    "supportOperationList",
+    "operationList",
+    "operations",
+    "oprnList",
+    "oprnTypeList",
+    "funcList",
+    "functionList",
+)

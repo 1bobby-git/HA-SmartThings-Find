@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import aiohttp
-import pytz
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -14,19 +13,19 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
-from .utils import fetch_csrf, get_device_location
+from .utils import keepalive_ping, fetch_csrf, get_device_location
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """
-    Coordinator with backward compatible signatures.
+    Coordinator that supports BOTH signatures:
 
-    Preferred (current):
-        SmartThingsFindCoordinator(hass=hass, entry=entry, session=session, devices=devices, update_interval_s=120)
+    New style:
+        SmartThingsFindCoordinator(hass=hass, entry=entry, session=session, devices=devices, update_interval_s=60)
 
-    Legacy:
+    Old style:
         SmartThingsFindCoordinator(hass, session, devices, 60)
         SmartThingsFindCoordinator(hass, entry, session, devices, 60)
     """
@@ -39,13 +38,10 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         session: aiohttp.ClientSession | None = None,
         devices: list[dict[str, Any]] | None = None,
         update_interval_s: int | None = None,
-        keepalive_interval_s: int = 300,
+        keepalive_interval_s: int = 180,
         **kwargs: Any,
     ) -> None:
         # --- Parse legacy positional args for compatibility ---
-        # Possible legacy patterns:
-        #   (session, devices, update_interval)
-        #   (entry, session, devices, update_interval)
         if args:
             if isinstance(args[0], ConfigEntry):
                 entry = args[0]
@@ -56,14 +52,12 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if len(args) > 3 and update_interval_s is None:
                     update_interval_s = int(args[3])
             else:
-                # session first
                 session = args[0]
                 if len(args) > 1:
                     devices = args[1]
                 if len(args) > 2 and update_interval_s is None:
                     update_interval_s = int(args[2])
 
-        # kwargs fallbacks
         if entry is None:
             entry = kwargs.get("config_entry") or kwargs.get("entry")  # type: ignore[assignment]
         if session is None:
@@ -74,13 +68,14 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if update_interval_s is None:
             update_interval_s = 60
 
-        if session is None:
-            raise ValueError("SmartThingsFindCoordinator requires an aiohttp session")
-
         self.hass = hass
         self.entry = entry
-        self.entry_id: str | None = entry.entry_id if entry else None
+        self.entry_id = entry.entry_id if entry else None
+
+        if session is None:
+            raise ValueError("SmartThingsFindCoordinator requires an aiohttp session")
         self.session = session
+
         self.devices = devices or []
 
         super().__init__(
@@ -93,7 +88,7 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._keepalive_cancel = async_track_time_interval(
             hass,
             self._async_keepalive,
-            timedelta(seconds=max(120, int(keepalive_interval_s))),
+            timedelta(seconds=max(60, int(keepalive_interval_s))),
         )
 
     async def async_shutdown(self) -> None:
@@ -103,65 +98,44 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._keepalive_cancel = None
 
     async def _async_keepalive(self, _now) -> None:
-        """Periodic CSRF refresh; never raise here."""
+        """Periodic session keepalive; do not raise here."""
+        if not self.entry_id:
+            return
+
         try:
-            # entry_id can be None in some edge cases; fetch_csrf supports it (won't store)
-            await fetch_csrf(self.hass, self.session, self.entry_id)
-            _LOGGER.debug("keepalive: csrf refreshed")
+            # ✅ 세션 유지(중요): csrf 갱신 + device list ping
+            await keepalive_ping(self.hass, self.session, self.entry_id)
         except ConfigEntryAuthFailed as e:
             _LOGGER.warning("keepalive failed (reauth likely needed): %s", e)
-        except Exception as e:  # noqa: BLE001
+            # 가능한 HA 버전에서는 reauth 플로우 시작 시도
+            try:
+                if self.entry is not None:
+                    self.hass.config_entries.async_start_reauth(self.entry)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as e:
             _LOGGER.debug("keepalive unexpected error: %s", e)
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data for all devices.
+        """Fetch data for all devices."""
+        try:
+            results: dict[str, Any] = {}
+            for dev in self.devices:
+                dev_data = dev["data"]
 
-        Stability policy:
-        - If one device fails, do NOT fail the whole coordinator.
-        - Keep previous data for that device if available.
-        - Only raise if authentication truly failed (ConfigEntryAuthFailed).
-        """
-        if not self.entry_id:
-            raise UpdateFailed("Missing entry_id for SmartThings Find coordinator")
+                try:
+                    tag_data = await get_device_location(self.hass, self.session, dev_data, self.entry_id or "")
+                except ConfigEntryAuthFailed:
+                    # 1회 CSRF 재발급 후 재시도
+                    if self.entry_id:
+                        await fetch_csrf(self.hass, self.session, self.entry_id)
+                    tag_data = await get_device_location(self.hass, self.session, dev_data, self.entry_id or "")
 
-        results: dict[str, Any] = {}
-        previous: dict[str, Any] = self.data or {}
+                results[str(dev_data.get("dvceID"))] = tag_data
 
-        for dev in self.devices:
-            dev_data = dev.get("data") or {}
-            dvce_id = str(dev_data.get("dvceID"))
-            dev_name = dev_data.get("modelName") or dvce_id
+            return results
 
-            try:
-                tag_data = await get_device_location(self.hass, self.session, dev_data, self.entry_id)
-                if tag_data is None:
-                    raise RuntimeError("get_device_location returned None")
-
-                results[dvce_id] = tag_data
-
-            except ConfigEntryAuthFailed:
-                raise
-
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("Device update failed (%s / %s): %s", dev_name, dvce_id, err, exc_info=True)
-
-                prev = previous.get(dvce_id)
-                if isinstance(prev, dict):
-                    results[dvce_id] = prev
-                    continue
-
-                now = datetime.now(tz=pytz.UTC)
-                results[dvce_id] = {
-                    "dev_name": dev_name,
-                    "dev_id": dvce_id,
-                    "update_success": False,
-                    "location_found": False,
-                    "used_op": None,
-                    "used_loc": {"latitude": None, "longitude": None, "gps_accuracy": None, "gps_date": None},
-                    "ops": [],
-                    "battery_level": None,
-                    "fetched_at": now,
-                    "last_update": now,
-                }
-
-        return results
+        except ConfigEntryAuthFailed:
+            raise
+        except Exception as err:
+            raise UpdateFailed(f"Error fetching SmartThings Find data: {err}") from err

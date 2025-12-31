@@ -21,10 +21,10 @@ from homeassistant.helpers.entity import DeviceInfo
 from .const import (
     DOMAIN,
     BATTERY_LEVELS,
-    CONF_COOKIE,
     CONF_ACTIVE_MODE_SMARTTAGS,
     CONF_ACTIVE_MODE_OTHERS,
     CONF_ST_IDENTIFIER,
+    CONF_COOKIE,
     OP_RING,
     OP_CHECK_CONNECTION_WITH_LOCATION,
     OP_CHECK_CONNECTION,
@@ -42,6 +42,19 @@ COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 # JSON-safe smartthings identifier encoding
 _ST_IDENT_PREFIX = "smartthings::"
+
+# 기본 헤더(서버가 너무 “봇”처럼 판단하는 케이스 완화 목적, 보장 X)
+DEFAULT_HEADERS: dict[str, str] = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "ko,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/123.0.0.0 Safari/537.36"
+    ),
+}
 
 
 def parse_cookie_header(cookie_header_line: str) -> dict[str, str]:
@@ -100,48 +113,76 @@ def make_session(hass: HomeAssistant) -> aiohttp.ClientSession:
         hass,
         cookie_jar=jar,
         raise_for_status=False,
+        headers=DEFAULT_HEADERS,
     )
 
 
-def _mask_set_cookie_headers(set_cookie_values: list[str]) -> list[str]:
-    """Return only cookie names, mask values."""
-    masked: list[str] = []
-    for raw in set_cookie_values:
-        first = raw.split(";", 1)[0].strip()
-        if "=" in first:
-            name = first.split("=", 1)[0].strip()
-            masked.append(f"{name}=***")
-        else:
-            masked.append("***")
-    return masked
+def _mask_cookie_value(v: str) -> str:
+    if not v:
+        return ""
+    if len(v) <= 6:
+        return "***"
+    return f"{v[:3]}***{v[-3:]}"
 
 
-def _cookiejar_to_cookie_header(session: aiohttp.ClientSession) -> str:
-    """Serialize current cookie jar for STF_BASE to a Cookie header string."""
-    filtered = session.cookie_jar.filter_cookies(STF_BASE)
+def _serialize_cookies_for_stf(session: aiohttp.ClientSession) -> str:
+    """
+    Serialize cookies that would be sent to STF_BASE into a Cookie header string.
+    """
+    sc = session.cookie_jar.filter_cookies(STF_BASE)
     parts: list[str] = []
-    for k, morsel in filtered.items():
+    for k, morsel in sc.items():
+        if not COOKIE_NAME_RE.match(k):
+            continue
         parts.append(f"{k}={morsel.value}")
     return "; ".join(parts)
+
+
+async def _maybe_persist_cookie_header(hass: HomeAssistant, entry_id: str, session: aiohttp.ClientSession) -> None:
+    """
+    If server updated cookies (Set-Cookie), persist refreshed cookie header into the config entry.
+    This reduces the chance of the user needing to re-paste cookies after restart.
+    """
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None:
+        return
+
+    new_cookie_line = _serialize_cookies_for_stf(session)
+    if not new_cookie_line:
+        return
+
+    old_cookie_line = (entry.data.get(CONF_COOKIE) or "").strip()
+    if old_cookie_line == new_cookie_line:
+        return
+
+    # 너무 자주 쓰지 않게: 큰 차이가 있을 때만 업데이트
+    hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_COOKIE: new_cookie_line})
+    _LOGGER.debug(
+        "Persisted refreshed cookie header into entry data (len %s -> %s).",
+        len(old_cookie_line),
+        len(new_cookie_line),
+    )
 
 
 async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str | None = None) -> str:
     """
     Calls chkLogin.do and returns CSRF from header "_csrf".
     If entry_id is given, also stores it in hass.data[DOMAIN][entry_id]["_csrf"].
-    Additionally, if cookie jar changed and entry exists, persist updated cookie header.
+    Also logs Set-Cookie presence and persists cookie header if changed.
     """
     async with session.get(URL_CHK_LOGIN) as resp:
         text = (await resp.text()).strip()
         csrf = resp.headers.get("_csrf")
 
-        # Debug: Set-Cookie (mask values)
-        try:
-            sc = resp.headers.getall("Set-Cookie", [])  # type: ignore[attr-defined]
-        except Exception:
-            sc = []
-        if sc:
-            _LOGGER.debug("chkLogin.do Set-Cookie: %s", _mask_set_cookie_headers(sc))
+        set_cookie = resp.headers.getall("Set-Cookie", [])
+        if set_cookie:
+            # 값은 민감하니 "이름"만 로깅
+            names = []
+            for line in set_cookie:
+                name = line.split("=", 1)[0].strip()
+                if name:
+                    names.append(name)
+            _LOGGER.debug("chkLogin.do Set-Cookie names=%s", names)
 
         _LOGGER.debug("chkLogin.do status=%s csrf=%s body=%s", resp.status, bool(csrf), text[:200])
 
@@ -155,27 +196,18 @@ async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_
                 f"CSRF token not found. status={resp.status}, csrf={bool(csrf)}, body='{text[:120]}'"
             )
 
-        if entry_id is not None:
+        if entry_id is not None and entry_id != "config_flow":
             hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})["_csrf"] = csrf
 
-            # Persist refreshed cookies if they changed (best-effort).
-            # Only attempt when entry_id looks like a real config entry id.
-            entry = hass.config_entries.async_get_entry(entry_id)
-            if entry is not None:
-                new_cookie_header = _cookiejar_to_cookie_header(session)
-                if new_cookie_header:
-                    old_cookie_header = (entry.data.get(CONF_COOKIE) or "").strip()
-                    if new_cookie_header.strip() != old_cookie_header:
-                        _LOGGER.debug("Cookie jar changed -> updating stored cookie header (names only): %s", list(parse_cookie_header(new_cookie_header).keys()))
-                        new_data = dict(entry.data)
-                        new_data[CONF_COOKIE] = new_cookie_header
-                        hass.config_entries.async_update_entry(entry, data=new_data)
+            # ✅ 쿠키 갱신이 내려오면 entry.data에 자동 저장
+            if set_cookie:
+                await _maybe_persist_cookie_header(hass, entry_id, session)
 
         return csrf
 
 
 # =========================
-# 0.3.16+ SmartThings mapping helpers
+# SmartThings mapping helpers
 # =========================
 
 def list_smartthings_devices_for_ui(hass: HomeAssistant) -> list[tuple[str, str]]:
@@ -364,6 +396,27 @@ async def send_operation(
         raise HomeAssistantError(f"SmartThings Find operation failed: {status}")
 
 
+async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> None:
+    """
+    Keep session warm.
+    - Refresh CSRF
+    - Then call device list endpoint (light-ish) to extend session idle timer
+    """
+    await fetch_csrf(hass, session, entry_id)
+
+    csrf = hass.data[DOMAIN][entry_id]["_csrf"]
+    url = URL_DEVICE_LIST.update_query({"_csrf": csrf})
+
+    async with session.post(url, headers={"Accept": "application/json"}, data={}) as resp:
+        text = (await resp.text()).strip()
+        if resp.status != 200:
+            _LOGGER.debug("keepalive ping failed status=%s body=%s", resp.status, text[:120])
+            if resp.status in (401, 403) or text in ("Logout", "fail"):
+                raise ConfigEntryAuthFailed("Session invalid during keepalive ping")
+        else:
+            _LOGGER.debug("keepalive ping ok (device list) status=200")
+
+
 async def get_device_location(
     hass: HomeAssistant,
     session: aiohttp.ClientSession,
@@ -472,14 +525,3 @@ async def get_device_location(
     except Exception as e:
         _LOGGER.error("[%s] Exception in get_device_location: %s", dev_name, e, exc_info=True)
         return None
-
-
-async def ring_device(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str, dev_data: dict[str, Any], start: bool) -> None:
-    payload = {
-        "dvceId": dev_data.get("dvceID"),
-        "operation": OP_RING,
-        "usrId": dev_data.get("usrId"),
-        "status": "start" if start else "stop",
-        "lockMessage": "SmartThings Find is trying to find this device.",
-    }
-    await send_operation(hass, session, entry_id, payload)
