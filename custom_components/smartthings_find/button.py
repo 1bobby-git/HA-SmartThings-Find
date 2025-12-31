@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -10,12 +11,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     DOMAIN,
+    DATA_SESSION,
+    DATA_COORDINATOR,
+    DATA_DEVICES,
     OP_RING,
     OP_CHECK_CONNECTION_WITH_LOCATION,
-    OP_LOCK,
-    OP_TRACK,
-    OP_ERASE,
-    OP_EXTEND_BATTERY,
 )
 from .utils import fetch_csrf
 
@@ -27,58 +27,31 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up SmartThings Find button entities (0.3.22.1 stable).
+    """Set up minimal SmartThings Find buttons (0.3.23).
 
-    Web device-card buttons (from HTML):
+    Keep only:
     - Ring
-    - Lost Mode
-    - Track Location
-    - Erase Data
-    - Extend Battery
-    Plus the refresh/connection-check button:
+    - Stop Ring
     - Update Location
-
-    Policy:
-    - Always expose web-visible actions in HA (best-effort).
-    - Stop Ring: only for TAG devices (safer 'supported device only' behavior).
     """
-    devices = hass.data[DOMAIN][entry.entry_id]["devices"]
+    data = hass.data[DOMAIN][entry.entry_id]
+    devices = data[DATA_DEVICES]
+
     entities: list[ButtonEntity] = []
-
     for device in devices:
-        dev_data = device["data"]
-        dev_type = dev_data.get("deviceTypeCode")  # "TAG" or others (phone/watch/etc)
-
-        # ✅ Always show Ring (web has it)
         entities.append(RingStartButton(hass, entry.entry_id, device))
-
-        # ✅ Website has refresh "connection check" => expose Update Location
+        entities.append(RingStopButton(hass, entry.entry_id, device))
         entities.append(UpdateLocationButton(hass, entry.entry_id, device))
-
-        # ✅ Non-tag devices: web shows these actions in grid
-        if dev_type != "TAG":
-            entities.append(PhoneActionButton(hass, entry.entry_id, device, OP_LOCK, "Lost Mode", "mdi:lock-alert"))
-            entities.append(
-                PhoneActionButton(hass, entry.entry_id, device, OP_TRACK, "Track Location", "mdi:crosshairs-gps")
-            )
-            entities.append(
-                PhoneActionButton(hass, entry.entry_id, device, OP_ERASE, "Erase Data", "mdi:trash-can-outline")
-            )
-            entities.append(
-                PhoneActionButton(
-                    hass, entry.entry_id, device, OP_EXTEND_BATTERY, "Extend Battery", "mdi:battery-plus-outline"
-                )
-            )
-
-        # ✅ Stop Ring: typically meaningful for tags (ring continues until stopped)
-        if dev_type == "TAG":
-            entities.append(RingStopButton(hass, entry.entry_id, device))
 
     async_add_entities(entities)
 
 
 class _STFOperationButton(ButtonEntity):
-    """Common helper to call STF addOperation.do with CSRF handling."""
+    """Common helper to call STF addOperation.do with CSRF handling.
+
+    NOTE: Do NOT set entity_picture here.
+    Only device_tracker should show STF icon.
+    """
 
     def __init__(self, hass: HomeAssistant, entry_id: str, device: dict[str, Any]) -> None:
         self.hass = hass
@@ -92,15 +65,9 @@ class _STFOperationButton(ButtonEntity):
 
         self._attr_device_info = device.get("ha_dev_info")
 
-        # Picture if available (works better than icon in some HA views)
-        icons = data.get("icons") or {}
-        colored_icon = icons.get("coloredIcon") or icons.get("icon")
-        if colored_icon:
-            self._attr_entity_picture = colored_icon
-
     async def _get_session_and_csrf(self):
         entry_data = self.hass.data[DOMAIN].get(self._entry_id, {})
-        session = entry_data.get("session")
+        session = entry_data.get(DATA_SESSION) or entry_data.get("session")
         csrf_token = entry_data.get("_csrf")
 
         if session is None:
@@ -146,16 +113,29 @@ class _STFOperationButton(ButtonEntity):
             _LOGGER.exception("Exception while posting operation %s: %s", operation, err)
             return False
 
+    async def _kick_refresh(self) -> None:
+        """Force coordinator refresh so sensors (Last update) reflect latest server state."""
+        try:
+            coordinator = self.hass.data[DOMAIN][self._entry_id].get(DATA_COORDINATOR)
+            if coordinator is None:
+                return
+
+            # 1) immediately request refresh
+            await coordinator.async_request_refresh()
+
+            # 2) and again after a short delay (server updates are async)
+            await asyncio.sleep(2)
+            await coordinator.async_request_refresh()
+        except Exception as err:
+            _LOGGER.debug("Coordinator refresh kick failed: %s", err)
+
 
 class RingStartButton(_STFOperationButton):
-    """Web: deviceCard-ring (소리 울리기)"""
-
     _attr_icon = "mdi:volume-high"
 
     def __init__(self, hass: HomeAssistant, entry_id: str, device: dict[str, Any]) -> None:
         super().__init__(hass, entry_id, device)
         model_name = self.device.get("modelName", "SmartThings Find Device")
-
         self._attr_unique_id = f"stf_ring_start_{self._dvce_id}"
         self._attr_name = f"{model_name} Ring"
 
@@ -167,60 +147,33 @@ class RingStartButton(_STFOperationButton):
                 "lockMessage": "Home Assistant is ringing your device!",
             },
         )
+        await self._kick_refresh()
 
 
 class RingStopButton(_STFOperationButton):
-    """Best-effort stop ringing (TAG only)."""
-
     _attr_icon = "mdi:volume-mute"
 
     def __init__(self, hass: HomeAssistant, entry_id: str, device: dict[str, Any]) -> None:
         super().__init__(hass, entry_id, device)
         model_name = self.device.get("modelName", "SmartThings Find Device")
-
         self._attr_unique_id = f"stf_ring_stop_{self._dvce_id}"
         self._attr_name = f"{model_name} Stop Ring"
 
     async def async_press(self) -> None:
-        # Many backends accept RING + status=stop as stop-ring
+        # Best-effort: OP_RING + status=stop
         await self._post_operation(OP_RING, {"status": "stop"})
+        await self._kick_refresh()
 
 
 class UpdateLocationButton(_STFOperationButton):
-    """Web: refresh button (connection check / 위치 업데이트)"""
-
     _attr_icon = "mdi:refresh"
 
     def __init__(self, hass: HomeAssistant, entry_id: str, device: dict[str, Any]) -> None:
         super().__init__(hass, entry_id, device)
         model_name = self.device.get("modelName", "SmartThings Find Device")
-
         self._attr_unique_id = f"stf_update_location_{self._dvce_id}"
         self._attr_name = f"{model_name} Update Location"
 
     async def async_press(self) -> None:
         await self._post_operation(OP_CHECK_CONNECTION_WITH_LOCATION)
-
-
-class PhoneActionButton(_STFOperationButton):
-    """Web grid actions for phones/etc:
-    - deviceCard-lock
-    - deviceCard-trackLoc
-    - deviceCard-wipe
-    - deviceCard-powerSaving
-    """
-
-    def __init__(self, hass: HomeAssistant, entry_id: str, device: dict[str, Any], op: str, label: str, icon: str):
-        super().__init__(hass, entry_id, device)
-        self._op = op
-        self._attr_icon = icon
-
-        model_name = self.device.get("modelName", "SmartThings Find Device")
-        self._attr_unique_id = f"stf_op_{op.lower()}_{self._dvce_id}"
-        self._attr_name = f"{model_name} {label}"
-
-    async def async_press(self) -> None:
-        extra: dict[str, Any] = {"status": "start"}
-        if self._op == OP_LOCK:
-            extra["lockMessage"] = "Enabled from Home Assistant"
-        await self._post_operation(self._op, extra)
+        await self._kick_refresh()

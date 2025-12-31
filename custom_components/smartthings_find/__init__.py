@@ -32,6 +32,7 @@ from .utils import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# ✅ 0.3.23: switch 제거, 최소 엔티티만 유지
 PLATFORMS = [Platform.DEVICE_TRACKER, Platform.SENSOR, Platform.BUTTON]
 
 
@@ -68,7 +69,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
     )
 
-    # Validate session + store csrf
+    # Validate session + store csrf (fetch_csrf 내부에서 hass.data[DOMAIN][entry_id]["_csrf"] 등을 채움)
     await fetch_csrf(hass, session, entry.entry_id)
 
     # Load devices (this also builds DeviceInfo identifiers used for device merge)
@@ -76,7 +77,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     update_interval = entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
 
-    # ✅ Now coordinator accepts entry kw safely (0.3.16+)
     coordinator = SmartThingsFindCoordinator(
         hass=hass,
         entry=entry,

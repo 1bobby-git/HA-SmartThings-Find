@@ -26,8 +26,6 @@ class SmartThingsFindTracker(CoordinatorEntity, TrackerEntity):
     _attr_should_poll = False
     _attr_source_type = SourceType.GPS
     _attr_has_entity_name = True
-
-    # fallback icon
     _attr_icon = "mdi:nfc-search-variant"
 
     def __init__(self, coordinator, dev: dict[str, Any]) -> None:
@@ -39,15 +37,11 @@ class SmartThingsFindTracker(CoordinatorEntity, TrackerEntity):
         self._attr_name = None
         self._attr_device_info = dev["ha_dev_info"]
 
-        # ✅ entity_picture가 아이콘보다 체감적으로 “확실히” 적용됨
+        # ✅ STF 아이콘/기기그림은 device_tracker에만 적용
         icons = dev["data"].get("icons") or {}
         colored_icon = icons.get("coloredIcon") or icons.get("icon")
         if colored_icon:
             self._attr_entity_picture = colored_icon
-
-    @property
-    def icon(self) -> str | None:
-        return "mdi:nfc-search-variant"
 
     @property
     def latitude(self) -> float | None:
