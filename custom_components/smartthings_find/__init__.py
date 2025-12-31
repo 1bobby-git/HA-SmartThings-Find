@@ -28,11 +28,11 @@ from .utils import (
     make_session,
     fetch_csrf,
     get_devices,
+    persist_cookie_to_entry,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-# ✅ 0.3.23: switch 제거, 최소 엔티티만 유지
 PLATFORMS = [Platform.DEVICE_TRACKER, Platform.SENSOR, Platform.BUTTON]
 
 
@@ -69,10 +69,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
     )
 
-    # Validate session + store csrf (fetch_csrf 내부에서 hass.data[DOMAIN][entry_id]["_csrf"] 등을 채움)
+    # Validate session + store csrf
     await fetch_csrf(hass, session, entry.entry_id)
+    await persist_cookie_to_entry(hass, entry, session)
 
-    # Load devices (this also builds DeviceInfo identifiers used for device merge)
     devices = await get_devices(hass, session, entry.entry_id)
 
     update_interval = entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
@@ -84,6 +84,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         devices=devices,
         update_interval_s=update_interval,
     )
+    if update_interval_s is None:
+        update_interval_s = 60
+
+    # 브라우저 idle logout(5~10분) 대응: keepalive는 무조건 240초 이하로
+    keepalive_interval_s = min(240, max(90, int(keepalive_interval_s)))
 
     await coordinator.async_config_entry_first_refresh()
 

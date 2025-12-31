@@ -6,9 +6,6 @@ from typing import Final
 
 DOMAIN: Final = "smartthings_find"
 
-# 현재 안정 버전: 최소 엔티티만 유지
-PLATFORMS: Final[list[str]] = ["device_tracker", "sensor", "button"]
-
 # ----------------------------
 # Config / Options keys
 # ----------------------------
@@ -21,6 +18,7 @@ CONF_JSESSIONID: Final = "jsessionid"
 CONF_UPDATE_INTERVAL: Final = "update_interval"
 CONF_UPDATE_INTERVAL_DEFAULT: Final = 120  # seconds
 
+# (저장 구조는 BOOL 유지)
 CONF_ACTIVE_MODE_SMARTTAGS: Final = "active_mode_smarttags"
 CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT: Final = True
 
@@ -37,10 +35,9 @@ CONF_ST_IDENTIFIER: Final = "st_identifier"
 DATA_SESSION: Final = "session"
 DATA_COORDINATOR: Final = "coordinator"
 DATA_DEVICES: Final = "devices"
-DATA_KEEPALIVE_CANCEL: Final = "keepalive_cancel"
 
 # ----------------------------
-# Battery mapping
+# Battery mapping (서버 응답 문자열 -> 퍼센트)
 # ----------------------------
 BATTERY_LEVELS: Final[dict[str, int]] = {
     "FULL": 100,
@@ -55,20 +52,10 @@ BATTERY_LEVELS: Final[dict[str, int]] = {
 BATTERY_LEVEL_MAP: Final[dict[str, int]] = dict(BATTERY_LEVELS)
 
 # ----------------------------
-# SmartThings Find operation codes (minimal)
+# SmartThings Find operation codes (최소 사용만 유지)
 # ----------------------------
 OP_RING: Final = "RING"
+
+# check / location update
 OP_CHECK_CONNECTION: Final = "CHECK_CONNECTION"
 OP_CHECK_CONNECTION_WITH_LOCATION: Final = "CHECK_CONNECTION_WITH_LOCATION"
-
-# Optional keys where support operation list might appear (kept for future)
-OPERATION_LIST_KEYS: Final[tuple[str, ...]] = (
-    "supportOperations",
-    "supportOperationList",
-    "operationList",
-    "operations",
-    "oprnList",
-    "oprnTypeList",
-    "funcList",
-    "functionList",
-)

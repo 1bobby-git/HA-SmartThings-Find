@@ -13,7 +13,12 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
-from .utils import keepalive_ping, fetch_csrf, get_device_location
+from .utils import (
+    fetch_csrf,
+    get_device_location,
+    keepalive_ping,
+    persist_cookie_to_entry,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,7 +43,7 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         session: aiohttp.ClientSession | None = None,
         devices: list[dict[str, Any]] | None = None,
         update_interval_s: int | None = None,
-        keepalive_interval_s: int = 180,
+        keepalive_interval_s: int = 240,
         **kwargs: Any,
     ) -> None:
         # --- Parse legacy positional args for compatibility ---
@@ -68,6 +73,10 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if update_interval_s is None:
             update_interval_s = 60
 
+        # ✅ 브라우저 idle 5~10분 로그아웃 대응:
+        # keepalive는 240초 이하로 강제 (너무 짧으면 서버에 부담이니 120~240 권장)
+        keepalive_interval_s = min(240, max(90, int(keepalive_interval_s)))
+
         self.hass = hass
         self.entry = entry
         self.entry_id = entry.entry_id if entry else None
@@ -88,7 +97,7 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._keepalive_cancel = async_track_time_interval(
             hass,
             self._async_keepalive,
-            timedelta(seconds=max(60, int(keepalive_interval_s))),
+            timedelta(seconds=keepalive_interval_s),
         )
 
     async def async_shutdown(self) -> None:
@@ -98,21 +107,22 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._keepalive_cancel = None
 
     async def _async_keepalive(self, _now) -> None:
-        """Periodic session keepalive; do not raise here."""
-        if not self.entry_id:
-            return
+        """
+        Periodic CSRF refresh + '활동' ping + cookie persist.
 
+        - chkLogin만으로 idle 연장이 안될 수 있어 deviceList ping 추가
+        - cookie_jar 갱신분을 entry.data에 저장(재부팅/재로드 시 재입력 확률 감소)
+        """
         try:
-            # ✅ 세션 유지(중요): csrf 갱신 + device list ping
-            await keepalive_ping(self.hass, self.session, self.entry_id)
+            await fetch_csrf(self.hass, self.session, self.entry_id)
+            if self.entry_id:
+                await keepalive_ping(self.hass, self.session, self.entry_id)
+            if self.entry is not None:
+                await persist_cookie_to_entry(self.hass, self.entry, self.session)
+
+            _LOGGER.debug("keepalive: csrf refreshed + ping ok (+ cookie persisted)")
         except ConfigEntryAuthFailed as e:
             _LOGGER.warning("keepalive failed (reauth likely needed): %s", e)
-            # 가능한 HA 버전에서는 reauth 플로우 시작 시도
-            try:
-                if self.entry is not None:
-                    self.hass.config_entries.async_start_reauth(self.entry)
-            except Exception:  # noqa: BLE001
-                pass
         except Exception as e:
             _LOGGER.debug("keepalive unexpected error: %s", e)
 
@@ -127,8 +137,7 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     tag_data = await get_device_location(self.hass, self.session, dev_data, self.entry_id or "")
                 except ConfigEntryAuthFailed:
                     # 1회 CSRF 재발급 후 재시도
-                    if self.entry_id:
-                        await fetch_csrf(self.hass, self.session, self.entry_id)
+                    await fetch_csrf(self.hass, self.session, self.entry_id)
                     tag_data = await get_device_location(self.hass, self.session, dev_data, self.entry_id or "")
 
                 results[str(dev_data.get("dvceID"))] = tag_data

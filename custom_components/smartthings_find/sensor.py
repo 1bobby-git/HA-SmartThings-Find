@@ -12,6 +12,33 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 
 
+def _battery_svg_name(level: int) -> str:
+    """SmartThings Find 웹 UI 배터리 SVG 파일명 추정 매핑."""
+    if level >= 96:
+        return "96_100.svg"
+    if level >= 76:
+        return "76_95.svg"
+    if level >= 56:
+        return "56_75.svg"
+    if level >= 26:
+        return "26_55.svg"
+    if level >= 6:
+        return "6_25.svg"
+    return "0_5.svg"
+
+
+def _battery_entity_picture(level: int | None) -> str | None:
+    if level is None:
+        return None
+    try:
+        lvl = int(level)
+    except Exception:
+        return None
+    lvl = max(0, min(100, lvl))
+    svg = _battery_svg_name(lvl)
+    return f"https://smartthingsfind.samsung.com/img/device_card/battery/{svg}"
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator = data["coordinator"]
@@ -44,6 +71,11 @@ class SmartThingsFindBatterySensor(CoordinatorEntity, SensorEntity):
         res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
         return (res or {}).get("battery_level")
 
+    @property
+    def entity_picture(self) -> str | None:
+        """배터리 상태에 따라 STF 배터리 SVG를 동적으로 적용."""
+        return _battery_entity_picture(self.native_value)
+
 
 class SmartThingsFindLastUpdateSensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
@@ -64,18 +96,5 @@ class SmartThingsFindLastUpdateSensor(CoordinatorEntity, SensorEntity):
         res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
         if not res:
             return None
-
-        # 1) STF 기준(ops 전체에서 가장 최신 timestamp)
-        last_update = res.get("last_update")
-        if isinstance(last_update, datetime):
-            return last_update
-
-        # 2) 위치 timestamp
         loc = res.get("used_loc") or {}
-        gps_date = loc.get("gps_date")
-        if isinstance(gps_date, datetime):
-            return gps_date
-
-        # 3) 폴백: fetch 시각
-        fetched_at = res.get("fetched_at")
-        return fetched_at if isinstance(fetched_at, datetime) else None
+        return loc.get("gps_date") or res.get("fetched_at")

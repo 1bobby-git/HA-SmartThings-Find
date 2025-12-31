@@ -6,6 +6,7 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
@@ -102,16 +103,14 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema({vol.Required(CONF_COOKIE): str})
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
-    # ---------------------------
-    # Reauth support
-    # ---------------------------
     async def async_step_reauth(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Start reauth."""
-        self._reauth_entry_id = self.context.get("entry_id")  # type: ignore[attr-defined]
+        """
+        Home Assistant가 ConfigEntryAuthFailed를 받으면 reauth flow를 시작한다.
+        """
+        self._reauth_entry_id = self.context.get("entry_id")
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Confirm reauth by asking cookie again."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -122,16 +121,23 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 session = make_session(self.hass)
                 apply_cookies_to_session(session, cookies)
+
                 try:
                     await fetch_csrf(self.hass, session, "config_flow")
-                    # 성공이면 entry에 반영
-                    entry_id = getattr(self, "_reauth_entry_id", None)
-                    if entry_id:
-                        entry = self.hass.config_entries.async_get_entry(entry_id)
-                        if entry:
-                            self.hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_COOKIE: cookie_line})
-                            await self.hass.config_entries.async_reload(entry.entry_id)
-                    return self.async_abort(reason="reauth_successful")
+                    devices = await get_devices(self.hass, session, "config_flow")
+                    if not devices:
+                        errors["base"] = "no_devices"
+                    else:
+                        entry_id = getattr(self, "_reauth_entry_id", None)
+                        if entry_id:
+                            entry = self.hass.config_entries.async_get_entry(entry_id)
+                            if entry:
+                                new_data = dict(entry.data)
+                                new_data[CONF_COOKIE] = cookie_line
+                                self.hass.config_entries.async_update_entry(entry, data=new_data)
+                                await self.hass.config_entries.async_reload(entry.entry_id)
+
+                        return self.async_abort(reason="reauth_successful")
                 except Exception as err:  # noqa: BLE001
                     _LOGGER.exception("Reauth failed: %s", err)
                     errors["base"] = "cannot_connect"
@@ -151,7 +157,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        # ⚠️ HA의 OptionsFlow는 config_entry property가 read-only인 경우가 있어 setter 금지
+        # ❗ HA 내부에 config_entry property가 있어서 setter로 넣으면 에러남
         self._config_entry = config_entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
