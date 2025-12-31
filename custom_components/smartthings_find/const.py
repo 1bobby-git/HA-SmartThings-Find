@@ -1,52 +1,82 @@
-"""Constants for the SmartThings Find integration."""
+"""Constants for SmartThings Find integration."""
 
 from __future__ import annotations
 
-DOMAIN = "smartthings_find"
+from typing import Final
 
-# ===== Config keys =====
-# Current (0.3.x) cookie input key
-CONF_COOKIE = "cookie"
+DOMAIN: Final = "smartthings_find"
 
-# Legacy keys kept for backwards compatibility / migrations
-CONF_COOKIE_INPUT = "cookie_input"
-CONF_JSESSIONID = "jsessionid"
+# Home Assistant platforms
+PLATFORMS: Final[list[str]] = ["device_tracker", "sensor", "button"]
 
-CONF_UPDATE_INTERVAL = "update_interval"
-CONF_UPDATE_INTERVAL_DEFAULT = 120
+# ----------------------------
+# Config / Options keys
+# ----------------------------
 
-CONF_ACTIVE_MODE_SMARTTAGS = "active_mode_smarttags"
-CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT = True
+# Current auth input (Cookie header line)
+CONF_COOKIE: Final = "cookie"
 
-CONF_ACTIVE_MODE_OTHERS = "active_mode_others"
-CONF_ACTIVE_MODE_OTHERS_DEFAULT = False
+# Legacy keys (backward compatibility)
+CONF_COOKIE_INPUT: Final = "cookie_input"
+CONF_JSESSIONID: Final = "jsessionid"
 
-# (0.3.16에서 들어온 “SmartThings 공식 통합 디바이스 매핑” 관련 옵션 키)
-# 너 요구사항대로 config_flow에서 더 이상 강제 선택은 하지 않지만,
-# 기존 설치/옵션 값이 남아있을 수 있어서 키는 유지 (하위호환)
-CONF_ST_DEVICE_ID = "st_device_id"
-CONF_ST_IDENTIFIER = "st_identifier"
+# Options
+CONF_UPDATE_INTERVAL: Final = "update_interval"
+CONF_UPDATE_INTERVAL_DEFAULT: Final = 120  # seconds
 
-# ===== hass.data keys =====
-DATA_SESSION = "session"
-DATA_COORDINATOR = "coordinator"
-DATA_DEVICES = "devices"
-DATA_KEEPALIVE_CANCEL = "keepalive_cancel"
+CONF_ACTIVE_MODE_SMARTTAGS: Final = "active_mode_smarttags"
+CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT: Final = True
 
-# ===== SmartThings Find operation codes =====
-# NOTE: STF 웹(Find)에서 사용하는 operation 문자열들.
-# 버튼 플랫폼이 import하는 OP_*는 반드시 여기에 존재해야 함.
-OP_RING = "RING"
-OP_CHECK_CONNECTION_WITH_LOCATION = "CHECK_CONNECTION_WITH_LOCATION"
+CONF_ACTIVE_MODE_OTHERS: Final = "active_mode_others"
+CONF_ACTIVE_MODE_OTHERS_DEFAULT: Final = False
 
-# 아래 4개가 지금 너 로그에서 핵심 (특히 OP_LOCK)
-OP_LOCK = "LOCK"
-OP_ERASE = "ERASE"
-OP_TRACK = "TRACK_LOCATION"
-OP_EXTEND_BATTERY = "EXTEND_BATTERY"
+# (If still present in older config/options flows, keep for compatibility)
+CONF_ST_DEVICE_ID: Final = "st_device_id"
+CONF_ST_IDENTIFIER: Final = "st_identifier"
 
-# STF 응답에서 operation list가 들어오는 키 후보들(서버가 케이스/키를 바꿀 때 대비)
-OPERATION_LIST_KEYS: tuple[str, ...] = (
+# ----------------------------
+# hass.data keys
+# ----------------------------
+DATA_SESSION: Final = "session"
+DATA_COORDINATOR: Final = "coordinator"
+DATA_DEVICES: Final = "devices"
+DATA_KEEPALIVE_CANCEL: Final = "keepalive_cancel"
+
+# ----------------------------
+# Battery level mapping
+# ----------------------------
+# ✅ 반드시 이름이 BATTERY_LEVELS 여야 함 (현재 네 config_flow가 이 이름을 import 중)
+BATTERY_LEVELS: Final[dict[str, int]] = {
+    "FULL": 100,
+    "HIGH": 80,
+    "NORMAL": 50,
+    "MEDIUM": 50,
+    "LOW": 15,
+    "VERY_LOW": 5,
+    "EMPTY": 0,
+    "NONE": 0,
+}
+
+# Some code may refer to BATTERY_LEVEL_MAP (keep alias to be safe)
+BATTERY_LEVEL_MAP: Final[dict[str, int]] = dict(BATTERY_LEVELS)
+
+# ----------------------------
+# SmartThings Find operation codes
+# ----------------------------
+# Button / actions import safety: these MUST exist if referenced by button.py etc.
+OP_RING: Final = "RING"
+OP_CHECK_CONNECTION_WITH_LOCATION: Final = "CHECK_CONNECTION_WITH_LOCATION"
+
+# ✅ 이전 로그의 ImportError 원인 해결
+OP_LOCK: Final = "LOCK"
+
+# Other operations (best-effort; backend can vary)
+OP_ERASE: Final = "ERASE"
+OP_TRACK: Final = "TRACK_LOCATION"
+OP_EXTEND_BATTERY: Final = "EXTEND_BATTERY"
+
+# STF responses can use different keys for operation lists; used by parsers.
+OPERATION_LIST_KEYS: Final[tuple[str, ...]] = (
     "supportOperations",
     "supportOperationList",
     "operationList",
