@@ -1,28 +1,41 @@
 {
+  "title": "SmartThings Find",
   "config": {
     "step": {
-      "cookie": {
-        "title": "SmartThings Find Login (Manuell)",
-        "description": "Melde dich im Browser bei smartthingsfind.samsung.com an, öffne dann DevTools → Network → chkLogin.do und kopiere **Request Headers → Cookie:** hier hinein."
+      "user": {
+        "title": "SmartThings Find einrichten",
+        "description": "SmartThings Find-Login starten. Sie werden aufgefordert, einen QR-Code zu scannen."
+      },
+      "reauth_confirm": {
+        "title": "Erneute Authentifizierung erforderlich",
+        "description": "Ihre SmartThings Find-Sitzung ist abgelaufen. Bitte erneut authentifizieren.",
+        "data": {}
+      },
+      "finish": {
+        "title": "Fertigstellen",
+        "description": "Wenn ein Fehler auftritt, wird er unten angezeigt."
       }
     },
-    "error": {
-      "invalid_cookie": "Cookie-Eingabe kann nicht gelesen werden.",
-      "missing_jsessionid": "JSESSIONID nicht gefunden. Bitte den gesamten Cookie-Header aus chkLogin.do einfügen.",
-      "auth_failed": "Cookie ist ungültig. Bitte den gesamten Cookie-Header aus chkLogin.do einfügen."
+    "progress": {
+      "task_stage_one": "Login wird vorbereitet…",
+      "task_stage_two": "Warten auf QR-Bestätigung…"
     },
     "abort": {
-      "reauth_successful": "Reauthentifizierung erfolgreich."
+      "single_instance_allowed": "Nur eine Instanz ist erlaubt."
+    },
+    "error": {
+      "login_stage_one_failed": "Login konnte nicht gestartet werden. Bitte erneut versuchen.",
+      "login_stage_two_failed": "Login-Bestätigung fehlgeschlagen oder Zeitüberschreitung. Bitte erneut versuchen.",
+      "missing_cookie": "Cookie fehlt. Bitte erneut authentifizieren.",
+      "invalid_cookie": "Ungültiges Cookie. Bitte erneut authentifizieren.",
+      "unknown": "Unbekannter Fehler."
     }
   },
   "options": {
     "step": {
       "init": {
-        "data": {
-          "update_interval": "Aktualisierungsintervall (Sekunden)",
-          "active_mode_smarttags": "Aktiven Modus für SmartTags verwenden (kann Akkuverbrauch erhöhen).",
-          "active_mode_others": "Aktiven Modus für andere Geräte verwenden (hoher Akkuverbrauch)."
-        }
+        "title": "Optionen",
+        "description": "Aktualisierungsintervall und Aktivmodus konfigurieren."
       }
     }
   }
