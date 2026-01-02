@@ -76,19 +76,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     try:
-        # Validate session + store csrf
         await fetch_csrf(hass, session, entry.entry_id)
 
-        # fetch_csrf 과정에서 쿠키가 갱신/회전되었을 수 있으므로 저장
+        # fetch_csrf 과정에서 쿠키가 갱신될 수 있음
         try:
             await persist_cookie_to_entry(hass, entry, session)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("cookie persist after fetch_csrf failed: %s", err)
 
-        # Load devices
         devices = await get_devices(hass, session, entry.entry_id)
 
-        # devices 조회에서도 Set-Cookie가 올 수 있어 한 번 더 저장
+        # get_devices에서도 Set-Cookie가 올 수 있어 저장
         try:
             await persist_cookie_to_entry(hass, entry, session)
         except Exception as err:  # noqa: BLE001
@@ -103,9 +101,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
         await coordinator.async_config_entry_first_refresh()
-
-        # ✅ keepalive 스케줄 시작 (로그 스팸 줄이고 만료 감지 → reauth 유도)
-        coordinator.start_keepalive()
 
         hass.data[DOMAIN][entry.entry_id].update(
             {

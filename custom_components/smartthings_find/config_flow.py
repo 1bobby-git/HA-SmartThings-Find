@@ -32,12 +32,7 @@ from .utils import (
 
 _LOGGER = logging.getLogger(__name__)
 
-
-STEP_USER_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_COOKIE): str,
-    }
-)
+STEP_USER_SCHEMA = vol.Schema({vol.Required(CONF_COOKIE): str})
 
 OPTIONS_SCHEMA = vol.Schema(
     {
@@ -50,8 +45,6 @@ OPTIONS_SCHEMA = vol.Schema(
 
 
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for SmartThings Find."""
-
     VERSION = 1
     CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLL
 
@@ -59,7 +52,6 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._reauth_entry: ConfigEntry | None = None
 
     async def _validate_cookie(self, cookie_line: str) -> str | None:
-        """Validate cookie by fetching csrf. Return error key or None."""
         cookie_line = (cookie_line or "").strip()
         if not cookie_line:
             return "missing_cookie"
@@ -71,7 +63,8 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         session = make_session(self.hass)
         try:
             apply_cookies_to_session(session, cookies)
-            await fetch_csrf(self.hass, session, "")  # entry_id 없어도 체크 가능하도록 빈 값
+            # entry_id 없어도 체크 가능하도록 빈 값 허용
+            await fetch_csrf(self.hass, session, "")
             return None
         except ConfigEntryAuthFailed:
             return "invalid_cookie"
@@ -85,14 +78,12 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 pass
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
-        """Initial setup."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
             cookie_line = user_input.get(CONF_COOKIE, "")
             err = await self._validate_cookie(cookie_line)
             if err is None:
-                # ✅ 최초 설정: cookie만 entry.data에 저장 (options는 options flow에서)
                 return self.async_create_entry(
                     title="SmartThings Find",
                     data={CONF_COOKIE: cookie_line.strip()},
@@ -102,15 +93,12 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors)
 
     async def async_step_reauth(self, user_input: dict[str, Any] | None = None):
-        """Handle reauth initiated by ConfigEntryAuthFailed."""
         entry_id = self.context.get("entry_id")
         if entry_id:
             self._reauth_entry = self.hass.config_entries.async_get_entry(entry_id)
-
         return await self.async_step_reauth_confirm(user_input)
 
     async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None):
-        """Confirm reauth and ask for a new cookie."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -121,7 +109,6 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 new_data = dict(self._reauth_entry.data)
                 new_data[CONF_COOKIE] = cookie_line.strip()
 
-                # ✅ 최신 HA: async_update_reload_and_abort 사용 가능
                 if hasattr(self, "async_update_reload_and_abort"):
                     return self.async_update_reload_and_abort(
                         self._reauth_entry,
@@ -129,18 +116,13 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         reason="reauth_successful",
                     )
 
-                # ✅ 구버전 호환: 직접 업데이트 + reload + abort
                 self.hass.config_entries.async_update_entry(self._reauth_entry, data=new_data)
                 await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
                 return self.async_abort(reason="reauth_successful")
 
             errors["base"] = err or "unknown"
 
-        return self.async_show_form(
-            step_id="reauth_confirm",
-            data_schema=STEP_USER_SCHEMA,
-            errors=errors,
-        )
+        return self.async_show_form(step_id="reauth_confirm", data_schema=STEP_USER_SCHEMA, errors=errors)
 
     @staticmethod
     @callback
@@ -149,10 +131,8 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow."""
-
     def __init__(self, entry: ConfigEntry) -> None:
-        self._entry = entry  # ✅ self.config_entry에 대입하지 않음(HA 버전에 따라 read-only일 수 있음)
+        self._entry = entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         options = dict(self._entry.options)
@@ -161,7 +141,6 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
             options.update(user_input)
             return self.async_create_entry(title="", data=options)
 
-        # 현재 옵션값 반영해서 스키마 default 채움
         schema = vol.Schema(
             {
                 vol.Optional(
