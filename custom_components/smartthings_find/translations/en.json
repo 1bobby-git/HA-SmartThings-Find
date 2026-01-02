@@ -1,0 +1,39 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "SmartThings Find",
+        "description": "1) Login at https://smartthingsfind.samsung.com\n2) DevTools(F12) → Network\n3) Open chkLogin.do (refresh if needed)\n4) Copy Request Headers → Cookie: line\n5) Paste below",
+        "data": {
+          "cookie_input": "Cookie header"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authentication required",
+        "description": "Session expired. Paste a new Cookie header to re-authenticate.",
+        "data": {
+          "cookie_input": "Cookie header"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Authentication failed. Please verify the Cookie header.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "reauth_successful": "Re-authentication successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "update_interval": "Update interval (seconds)",
+          "active_mode_smarttags": "Active mode for SmartTags",
+          "active_mode_others": "Active mode for other devices"
+        }
+      }
+    }
+  }
+}
