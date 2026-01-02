@@ -28,7 +28,7 @@ from .utils import (
     make_session,
     fetch_csrf,
     get_devices,
-    persist_cookie_to_entry,  # ✅ 추가(최소 변경)
+    persist_cookie_to_entry,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,7 +61,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     active_others = entry.options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT)
     st_identifier = entry.options.get(CONF_ST_IDENTIFIER)
 
-    # ✅ FIX: 반드시 먼저 정의 (UnboundLocalError 방지)
     update_interval_s = entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
     try:
         update_interval_s = int(update_interval_s)
@@ -80,7 +79,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Validate session + store csrf
         await fetch_csrf(hass, session, entry.entry_id)
 
-        # ✅ 추가(최소 변경): fetch_csrf 과정에서 쿠키가 갱신/회전되었을 수 있으므로 즉시 저장
+        # fetch_csrf 과정에서 쿠키가 갱신/회전되었을 수 있으므로 저장
         try:
             await persist_cookie_to_entry(hass, entry, session)
         except Exception as err:  # noqa: BLE001
@@ -89,7 +88,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Load devices
         devices = await get_devices(hass, session, entry.entry_id)
 
-        # ✅ 추가(최소 변경): devices 조회에서도 Set-Cookie가 올 수 있어 한 번 더 저장
+        # devices 조회에서도 Set-Cookie가 올 수 있어 한 번 더 저장
         try:
             await persist_cookie_to_entry(hass, entry, session)
         except Exception as err:  # noqa: BLE001
@@ -104,6 +103,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
         await coordinator.async_config_entry_first_refresh()
+
+        # ✅ keepalive 스케줄 시작 (로그 스팸 줄이고 만료 감지 → reauth 유도)
+        coordinator.start_keepalive()
 
         hass.data[DOMAIN][entry.entry_id].update(
             {

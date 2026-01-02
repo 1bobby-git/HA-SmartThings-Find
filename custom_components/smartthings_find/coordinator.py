@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any
+from time import monotonic
+from typing import Any, Callable
 
 import aiohttp
 
@@ -13,222 +14,179 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
-from .utils import (
-    fetch_csrf,
-    get_device_location,
-    keepalive_ping,
-    persist_cookie_to_entry,
-)
+from .utils import fetch_csrf, get_device_location
 
 _LOGGER = logging.getLogger(__name__)
 
+# 인증 실패 시 스팸 방지를 위해 업데이트 간격을 길게 늘림
+AUTH_FAILED_UPDATE_INTERVAL = timedelta(hours=6)
+
+# 같은 인증 실패 로그를 너무 자주 찍지 않도록(초 단위)
+AUTH_LOG_THROTTLE_SEC = 60 * 30  # 30분
+
+# keepalive 주기: 너무 자주 할 필요 없음 (세션 감지 + csrf 갱신 목적)
+KEEPALIVE_INTERVAL = timedelta(minutes=15)
+
 
 class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """
-    Coordinator that supports BOTH signatures:
+    """SmartThings Find data coordinator."""
 
-    New style:
-        SmartThingsFindCoordinator(hass=hass, entry=entry, session=session, devices=devices, update_interval_s=60)
-
-    Old style:
-        SmartThingsFindCoordinator(hass, session, devices, 60)
-        SmartThingsFindCoordinator(hass, entry, session, devices, 60)
-    """
-
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         hass: HomeAssistant,
-        *args: Any,
-        entry: ConfigEntry | None = None,
-        session: aiohttp.ClientSession | None = None,
-        devices: list[dict[str, Any]] | None = None,
-        update_interval_s: int | None = None,
-        keepalive_interval_s: int = 240,
-        **kwargs: Any,
+        entry: ConfigEntry,
+        session: aiohttp.ClientSession,
+        devices: list[dict[str, Any]],
+        update_interval_s: int,
     ) -> None:
-        # --- Parse legacy positional args for compatibility ---
-        if args:
-            if isinstance(args[0], ConfigEntry):
-                entry = args[0]
-                if len(args) > 1:
-                    session = args[1]
-                if len(args) > 2:
-                    devices = args[2]
-                if len(args) > 3 and update_interval_s is None:
-                    update_interval_s = int(args[3])
-            else:
-                session = args[0]
-                if len(args) > 1:
-                    devices = args[1]
-                if len(args) > 2 and update_interval_s is None:
-                    update_interval_s = int(args[2])
-
-        if entry is None:
-            entry = kwargs.get("config_entry") or kwargs.get("entry")  # type: ignore[assignment]
-        if session is None:
-            session = kwargs.get("session")
-        if devices is None:
-            devices = kwargs.get("devices")
-
-        if update_interval_s is None:
-            update_interval_s = 60
-
-        # ✅ 브라우저 idle 5~10분 로그아웃 대응:
-        # keepalive는 240초 이하로 강제 (너무 짧으면 서버에 부담이니 120~240 권장)
-        keepalive_interval_s = min(240, max(90, int(keepalive_interval_s)))
-
         self.hass = hass
         self.entry = entry
-        self.entry_id = entry.entry_id if entry else None
-
-        if session is None:
-            raise ValueError("SmartThingsFindCoordinator requires an aiohttp session")
+        self.entry_id = entry.entry_id
         self.session = session
+        self.devices = devices
 
-        self.devices = devices or []
+        self._normal_update_interval = timedelta(seconds=int(update_interval_s))
+        self._auth_failed = False
+        self._reauth_triggered = False
+        self._last_auth_log_mono = 0.0
 
-        # ✅ Update Location UX: 서버 last update(gps_date) "가져오는 중" 상태 저장
-        # - _last_update_fetch: dvce_id -> {"old": iso/None, "started": iso, "attempts": int}
-        # - _last_update_fetch_result: dvce_id -> "fetching"|"ok"|"timeout"
-        self._last_update_fetch: dict[str, dict[str, Any]] = {}
-        self._last_update_fetch_result: dict[str, str] = {}
+        self._unsub_keepalive: Callable[[], None] | None = None
+        self._keepalive_running = False
 
         super().__init__(
-            hass,
-            _LOGGER,
+            hass=hass,
+            logger=_LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=max(30, int(update_interval_s))),
+            update_interval=self._normal_update_interval,
         )
 
-        self._keepalive_cancel = async_track_time_interval(
-            hass,
-            self._async_keepalive,
-            timedelta(seconds=keepalive_interval_s),
+    # ---------- lifecycle ----------
+
+    def start_keepalive(self) -> None:
+        """Start periodic keepalive."""
+        if self._unsub_keepalive is not None:
+            return
+        # interval callback은 datetime 인자를 받으므로 wrapper 사용
+        self._unsub_keepalive = async_track_time_interval(
+            self.hass,
+            self._async_keepalive_tick,
+            KEEPALIVE_INTERVAL,
         )
+        _LOGGER.debug("Keepalive scheduled every %s", KEEPALIVE_INTERVAL)
 
     async def async_shutdown(self) -> None:
-        """Cancel keepalive timer."""
-        if self._keepalive_cancel:
-            self._keepalive_cancel()
-            self._keepalive_cancel = None
+        """Stop keepalive and cleanup."""
+        if self._unsub_keepalive is not None:
+            self._unsub_keepalive()
+            self._unsub_keepalive = None
+        self._keepalive_running = False
 
-    async def _async_keepalive(self, _now) -> None:
+    # ---------- auth/log helpers ----------
+
+    def _should_log_auth(self) -> bool:
+        now = monotonic()
+        if now - self._last_auth_log_mono >= AUTH_LOG_THROTTLE_SEC:
+            self._last_auth_log_mono = now
+            return True
+        return False
+
+    def _mark_auth_failed(self, err: Exception) -> None:
+        """Mark auth as failed and slow down polling to avoid log spam."""
+        if not self._auth_failed:
+            self._auth_failed = True
+            # 폴링 간격을 크게 늘려 스팸 방지
+            self.async_set_update_interval(AUTH_FAILED_UPDATE_INTERVAL)
+
+        if self._should_log_auth():
+            _LOGGER.warning(
+                "keepalive failed (reauth likely needed): %s",
+                err,
+            )
+        else:
+            _LOGGER.debug("keepalive/auth still failing: %s", err)
+
+    def _mark_auth_ok(self) -> None:
+        """Reset auth-failed state and restore normal polling interval."""
+        if self._auth_failed:
+            _LOGGER.info("Authentication recovered; restoring normal polling interval.")
+            self._auth_failed = False
+            self._reauth_triggered = False
+            self.async_set_update_interval(self._normal_update_interval)
+
+    # ---------- keepalive ----------
+
+    async def _async_keepalive_tick(self, _now: datetime) -> None:
+        """Periodic tick wrapper for keepalive."""
+        # 동시에 여러 tick이 겹치지 않도록 가드
+        if self._keepalive_running:
+            return
+        self._keepalive_running = True
+        try:
+            await self.async_keepalive()
+        finally:
+            self._keepalive_running = False
+
+    async def async_keepalive(self) -> None:
         """
-        Periodic CSRF refresh + '활동' ping + cookie persist.
+        Keep the session alive by refreshing csrf.
 
-        - chkLogin만으로 idle 연장이 안될 수 있어 deviceList ping 추가
-        - cookie_jar 갱신분을 entry.data에 저장(재부팅/재로드 시 재입력 확률 감소)
+        - 여기서 ConfigEntryAuthFailed를 raise하면 스케줄러 쪽에서 "Task exception" 류가 늘 수 있어
+          상태만 마킹하고, reauth 트리거는 coordinator refresh로 유도합니다.
         """
         try:
             await fetch_csrf(self.hass, self.session, self.entry_id)
-            if self.entry_id:
-                await keepalive_ping(self.hass, self.session, self.entry_id)
-            if self.entry is not None:
-                await persist_cookie_to_entry(self.hass, self.entry, self.session)
+            self._mark_auth_ok()
+        except ConfigEntryAuthFailed as err:
+            self._mark_auth_failed(err)
 
-            _LOGGER.debug("keepalive: csrf refreshed + ping ok (+ cookie persisted)")
-        except ConfigEntryAuthFailed as e:
-            _LOGGER.warning("keepalive failed (reauth likely needed): %s", e)
-        except Exception as e:
-            _LOGGER.debug("keepalive unexpected error: %s", e)
+            # reauth를 트리거하기 위해 refresh 요청(예외는 coordinator 내부에서 처리됨)
+            if not self._reauth_triggered:
+                self._reauth_triggered = True
+                self.hass.async_create_task(self.async_request_refresh())
+        except Exception as err:  # noqa: BLE001
+            # keepalive에서 일반 네트워크 오류는 debug 정도로만(스팸 방지)
+            _LOGGER.debug("keepalive transient error: %s", err)
 
-    def mark_pending_last_update(self, dvce_id: str, old_gps_date: Any | None) -> None:
-        """Mark that we are waiting for server gps_date to change for this device."""
-        old_iso = old_gps_date.isoformat() if hasattr(old_gps_date, "isoformat") and old_gps_date else None
-        self._last_update_fetch[str(dvce_id)] = {
-            "old": old_iso,
-            "started": datetime.utcnow().isoformat(),
-            "attempts": 0,
-        }
-        self._last_update_fetch_result[str(dvce_id)] = "fetching"
-        self.async_update_listeners()
-
-    def get_pending_last_update(self, dvce_id: str) -> dict[str, Any] | None:
-        return self._last_update_fetch.get(str(dvce_id))
-
-    def mark_last_update_timeout(self, dvce_id: str) -> None:
-        """Stop fetching indicator with timeout result."""
-        dvce_id = str(dvce_id)
-        if dvce_id in self._last_update_fetch:
-            self._last_update_fetch.pop(dvce_id, None)
-            self._last_update_fetch_result[dvce_id] = "timeout"
-            self.async_update_listeners()
-
-    @staticmethod
-    def _extract_server_gps_date(tag_data: dict[str, Any] | None):
-        if not tag_data:
-            return None
-        loc = tag_data.get("used_loc") or {}
-        return loc.get("gps_date")
+    # ---------- main update ----------
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch data for all devices."""
+        """Fetch data from SmartThings Find."""
         try:
-            results: dict[str, Any] = {}
-            prev_data_all = self.data or {}
+            tags: dict[str, Any] = {}
+            _LOGGER.debug("Updating SmartThings Find locations for %d devices", len(self.devices))
 
-            for dev in self.devices:
-                dev_data = dev["data"]
-                dev_id = str(dev_data.get("dvceID"))
+            for device in self.devices:
+                dev_data = device.get("data") or device
+                tag_data = await get_device_location(
+                    self.hass,
+                    self.session,
+                    dev_data,
+                    self.entry_id,
+                )
 
-                try:
-                    tag_data = await get_device_location(self.hass, self.session, dev_data, self.entry_id or "")
-                except ConfigEntryAuthFailed:
-                    # 1회 CSRF 재발급 후 재시도
-                    await fetch_csrf(self.hass, self.session, self.entry_id)
-                    tag_data = await get_device_location(self.hass, self.session, dev_data, self.entry_id or "")
+                dvce_id = (
+                    dev_data.get("dvceID")
+                    or dev_data.get("dvceId")
+                    or dev_data.get("dvceid")
+                )
+                if dvce_id:
+                    tags[str(dvce_id)] = tag_data
 
-                # ✅ 안정화: 간헐적으로 gps_date가 빠져도 이전 값을 유지
-                prev_tag = prev_data_all.get(dev_id) if prev_data_all else None
-                prev_loc = (prev_tag or {}).get("used_loc") or {}
-                prev_gps_date = prev_loc.get("gps_date")
+            # 정상 수집 성공 => auth 상태 복구
+            self._mark_auth_ok()
+            return tags
 
-                new_loc = (tag_data or {}).get("used_loc") or {}
-                if prev_gps_date is not None and "gps_date" not in new_loc:
-                    new_loc = dict(new_loc)
-                    new_loc["gps_date"] = prev_gps_date
-                    tag_data = dict(tag_data or {})
-                    tag_data["used_loc"] = new_loc
+        except ConfigEntryAuthFailed as err:
+            # 401 Logout / chkLogin fail 등 인증 이슈
+            self._mark_auth_failed(err)
 
-                # ✅ pending 처리: 서버 gps_date가 "변했을 때만" fetching 해제
-                pending = self._last_update_fetch.get(dev_id)
-                if pending is not None:
-                    try:
-                        pending["attempts"] = int(pending.get("attempts", 0)) + 1
-                    except Exception:
-                        pending["attempts"] = 1
+            # ✅ reauth는 한 번만 트리거
+            if not self._reauth_triggered:
+                self._reauth_triggered = True
+                raise
 
-                    old_iso = pending.get("old")
-                    old_dt = None
-                    if old_iso:
-                        try:
-                            old_dt = datetime.fromisoformat(old_iso)
-                        except Exception:
-                            old_dt = None
+            # ✅ reauth 이미 트리거 됐으면 스팸 줄이기 위해 UpdateFailed로 변경
+            raise UpdateFailed("Authentication required (reauth in progress)") from err
 
-                    new_dt = self._extract_server_gps_date(tag_data)
-
-                    changed = (old_dt is not None and new_dt is not None and new_dt != old_dt) or (
-                        old_dt is None and new_dt is not None
-                    )
-                    if changed:
-                        self._last_update_fetch.pop(dev_id, None)
-                        self._last_update_fetch_result[dev_id] = "ok"
-                        self.async_update_listeners()
-
-                results[dev_id] = tag_data
-
-            # ✅ 추가(최소 변경): STF가 Set-Cookie로 세션을 회전시키는 경우를 대비해
-            # refresh 성공 시점마다 최신 쿠키를 entry에 저장(재부팅 후 '바로 fail' 방지에 효과적)
-            if self.entry is not None:
-                try:
-                    await persist_cookie_to_entry(self.hass, self.entry, self.session)
-                except Exception as err:
-                    _LOGGER.debug("cookie persist after update failed: %s", err)
-
-            return results
-
-        except ConfigEntryAuthFailed:
-            raise
         except Exception as err:
-            raise UpdateFailed(f"Error fetching SmartThings Find data: {err}") from err
+            raise UpdateFailed(f"Error fetching {DOMAIN} data: {err}") from err
