@@ -1,13 +1,19 @@
-{
-  "domain": "smartthings_find",
-  "name": "SmartThings Find",
-  "after_dependencies": ["http"],
-  "version": "1.0.21",
-  "documentation": "https://github.com/1bobby-git/HA-SmartThings-Find",
-  "issue_tracker": "https://github.com/1bobby-git/HA-SmartThings-Find/issues",
-  "integration_type": "hub",
-  "codeowners": ["@1bobby-git"],
-  "requirements": [],
-  "iot_class": "cloud_polling",
-  "config_flow": true
+﻿{
+    "domain":  "smartthings_find",
+    "name":  "SmartThings Find",
+    "after_dependencies":  [
+                               "http"
+                           ],
+    "version":  "1.1.0",
+    "documentation":  "https://github.com/1bobby-git/HA-SmartThings-Find",
+    "issue_tracker":  "https://github.com/1bobby-git/HA-SmartThings-Find/issues",
+    "integration_type":  "hub",
+    "codeowners":  [
+                       "@1bobby-git"
+                   ],
+    "requirements":  [
+
+                     ],
+    "iot_class":  "cloud_polling",
+    "config_flow":  true
 }
