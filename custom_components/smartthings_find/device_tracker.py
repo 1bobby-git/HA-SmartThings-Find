@@ -23,14 +23,12 @@ def _normalize_picture_url(url: str | None) -> str | None:
 
     if u.startswith("//"):
         return "https:" + u
-
     if u.startswith("/"):
         return _BASE + u
-
     return u
 
 
-def _pick_tracker_picture(dev: dict[str, Any]) -> str | None:
+def _pick_entity_picture(dev: dict[str, Any]) -> str | None:
     data = dev.get("data") or {}
 
     icons = data.get("icons") or {}
@@ -39,23 +37,16 @@ def _pick_tracker_picture(dev: dict[str, Any]) -> str | None:
     if pic:
         return pic
 
-    # ✅ 핸드폰만 아이콘 키가 다른 케이스 fallback (아이콘만 보강)
+    # ✅ 폰 기기에서 다른 키로 내려오는 경우만 fallback
     for k in (
         "coloredIcon",
         "icon",
         "iconUrl",
-        "iconURL",
         "imageUrl",
-        "imageURL",
         "imgUrl",
-        "imgURL",
         "pictureUrl",
-        "pictureURL",
         "thumbnailUrl",
-        "thumbnailURL",
-        "deviceIcon",
         "deviceIconUrl",
-        "deviceImage",
         "deviceImageUrl",
     ):
         v = data.get(k)
@@ -94,7 +85,7 @@ class SmartThingsFindTracker(CoordinatorEntity, TrackerEntity):
         self._attr_device_info = dev["ha_dev_info"]
 
         # ✅ STF 아이콘/기기그림은 device_tracker에만 적용 (폰도 포함)
-        pic = _pick_tracker_picture(dev)
+        pic = _pick_entity_picture(dev)
         if pic:
             self._attr_entity_picture = pic
 

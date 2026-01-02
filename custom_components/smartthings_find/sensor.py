@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, DATA_DEVICES, DATA_COORDINATOR
 
 
 def _battery_icon(level: int | None) -> str:
@@ -46,13 +46,16 @@ def _battery_icon(level: int | None) -> str:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
-    coordinator = data["coordinator"]
-    devices = data["devices"]
+    coordinator = data[DATA_COORDINATOR]
+    devices = data[DATA_DEVICES]
+
+    # 버튼에서 기록, 센서에서 읽는 저장소
+    data.setdefault("last_update_requests", {})
 
     entities: list[SensorEntity] = []
     for dev in devices:
-        entities.append(SmartThingsFindBatterySensor(coordinator, dev))
-        entities.append(SmartThingsFindLastUpdateSensor(coordinator, dev))
+        entities.append(SmartThingsFindBatterySensor(coordinator, entry.entry_id, dev))
+        entities.append(SmartThingsFindLastUpdateSensor(coordinator, entry.entry_id, dev))
     async_add_entities(entities)
 
 
@@ -62,8 +65,9 @@ class SmartThingsFindBatterySensor(CoordinatorEntity, SensorEntity):
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coordinator, dev: dict[str, Any]) -> None:
+    def __init__(self, coordinator, entry_id: str, dev: dict[str, Any]) -> None:
         super().__init__(coordinator)
+        self._entry_id = entry_id
         self.dev = dev
         self._dvce_id = dev["data"]["dvceID"]
 
@@ -78,7 +82,6 @@ class SmartThingsFindBatterySensor(CoordinatorEntity, SensorEntity):
 
     @property
     def icon(self) -> str:
-        # ✅ 요청: 배터리는 STF 방식(entity_picture) 말고 mdi 아이콘으로
         return _battery_icon(self.native_value)
 
 
@@ -87,8 +90,9 @@ class SmartThingsFindLastUpdateSensor(CoordinatorEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.TIMESTAMP
     _attr_icon = "mdi:clock-outline"
 
-    def __init__(self, coordinator, dev: dict[str, Any]) -> None:
+    def __init__(self, coordinator, entry_id: str, dev: dict[str, Any]) -> None:
         super().__init__(coordinator)
+        self._entry_id = entry_id
         self.dev = dev
         self._dvce_id = dev["data"]["dvceID"]
 
@@ -96,10 +100,51 @@ class SmartThingsFindLastUpdateSensor(CoordinatorEntity, SensorEntity):
         self._attr_name = "Last update"
         self._attr_device_info = dev["ha_dev_info"]
 
+    def _reqs(self) -> dict[str, Any]:
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._entry_id, {})
+        reqs = entry_data.get("last_update_requests", {})
+        return reqs if isinstance(reqs, dict) else {}
+
+    def _clear_req(self) -> None:
+        entry_data = self.coordinator.hass.data.get(DOMAIN, {}).get(self._entry_id, {})
+        reqs = entry_data.get("last_update_requests", {})
+        if isinstance(reqs, dict):
+            reqs.pop(self._dvce_id, None)
+
     @property
     def native_value(self) -> datetime | None:
+        # ✅ 서버의 마지막 업데이트 시간만 state로 사용
         res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
         if not res:
             return None
         loc = res.get("used_loc") or {}
-        return loc.get("gps_date") or res.get("fetched_at")
+        return loc.get("gps_date")
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        req = self._reqs().get(self._dvce_id)
+
+        res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
+        loc = (res or {}).get("used_loc") or {}
+        gps_date = loc.get("gps_date")
+        fetched_at = (res or {}).get("fetched_at")
+
+        attrs: dict[str, Any] = {
+            "server_last_update": gps_date,
+            "last_polled_at": fetched_at,
+        }
+
+        if isinstance(req, dict):
+            requested_at = req.get("requested_at")
+            prev_gps_date = req.get("prev_gps_date")
+
+            if gps_date and prev_gps_date and gps_date != prev_gps_date:
+                self._clear_req()
+                attrs["update_location_status"] = "done"
+            else:
+                attrs["update_location_status"] = "waiting_server_timestamp"
+                attrs["update_location_requested_at"] = requested_at
+        else:
+            attrs["update_location_status"] = "idle"
+
+        return attrs

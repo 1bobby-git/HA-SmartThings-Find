@@ -8,6 +8,7 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
@@ -36,6 +37,9 @@ async def async_setup_entry(
     """
     data = hass.data[DOMAIN][entry.entry_id]
     devices = data[DATA_DEVICES]
+
+    # ✅ Update Location 대기 상태 저장소(센서에서 읽음)
+    data.setdefault("last_update_requests", {})
 
     entities: list[ButtonEntity] = []
     for device in devices:
@@ -185,7 +189,36 @@ class UpdateLocationButton(_STFOperationButton):
         self._attr_unique_id = f"stf_update_location_{self._dvce_id}"
         self._attr_name = f"{model_name} Update Location"
 
+    def _mark_waiting_server_timestamp(self) -> None:
+        """Mark that user requested server gps_date update, so Last update sensor can show waiting state."""
+        entry_data = self.hass.data[DOMAIN].get(self._entry_id, {})
+        coordinator = entry_data.get(DATA_COORDINATOR)
+        reqs = entry_data.setdefault("last_update_requests", {})
+
+        res = None
+        if coordinator and getattr(coordinator, "data", None):
+            res = coordinator.data.get(self._dvce_id)
+
+        prev_gps_date = (((res or {}).get("used_loc") or {}).get("gps_date")) if res else None
+        reqs[self._dvce_id] = {
+            "requested_at": dt_util.utcnow(),
+            "prev_gps_date": prev_gps_date,
+        }
+
+    def _clear_waiting(self) -> None:
+        entry_data = self.hass.data[DOMAIN].get(self._entry_id, {})
+        reqs = entry_data.get("last_update_requests", {})
+        if isinstance(reqs, dict):
+            reqs.pop(self._dvce_id, None)
+
     async def async_press(self) -> None:
+        # ✅ 누른 즉시 “서버 업데이트 시간 받아오는 중” 상태를 Last update 센서에 노출
+        self._mark_waiting_server_timestamp()
+
         ok = await self._post_operation(OP_CHECK_CONNECTION_WITH_LOCATION)
         if ok:
             await self._kick_refresh()
+            return
+
+        # 실패면 대기 상태 제거(사용자에게 계속 대기 표시는 불필요)
+        self._clear_waiting()
