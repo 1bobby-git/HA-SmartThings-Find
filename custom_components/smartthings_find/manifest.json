@@ -1,4 +1,4 @@
-﻿{
+{
   "domain": "smartthings_find",
   "name": "SmartThings Find",
   "after_dependencies": ["http"],
