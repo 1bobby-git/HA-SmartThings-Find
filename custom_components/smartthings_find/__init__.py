@@ -28,6 +28,7 @@ from .utils import (
     make_session,
     fetch_csrf,
     get_devices,
+    persist_cookie_to_entry,  # ✅ 추가(최소 변경)
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,8 +80,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Validate session + store csrf
         await fetch_csrf(hass, session, entry.entry_id)
 
+        # ✅ 추가(최소 변경): fetch_csrf 과정에서 쿠키가 갱신/회전되었을 수 있으므로 즉시 저장
+        try:
+            await persist_cookie_to_entry(hass, entry, session)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("cookie persist after fetch_csrf failed: %s", err)
+
         # Load devices
         devices = await get_devices(hass, session, entry.entry_id)
+
+        # ✅ 추가(최소 변경): devices 조회에서도 Set-Cookie가 올 수 있어 한 번 더 저장
+        try:
+            await persist_cookie_to_entry(hass, entry, session)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("cookie persist after get_devices failed: %s", err)
 
         coordinator = SmartThingsFindCoordinator(
             hass=hass,

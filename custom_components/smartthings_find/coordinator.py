@@ -134,7 +134,6 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def mark_pending_last_update(self, dvce_id: str, old_gps_date: Any | None) -> None:
         """Mark that we are waiting for server gps_date to change for this device."""
-        # old_gps_date는 datetime일 가능성이 큼 → iso로 저장(속성 표시용)
         old_iso = old_gps_date.isoformat() if hasattr(old_gps_date, "isoformat") and old_gps_date else None
         self._last_update_fetch[str(dvce_id)] = {
             "old": old_iso,
@@ -157,7 +156,6 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @staticmethod
     def _extract_server_gps_date(tag_data: dict[str, Any] | None):
-        """Extract server-side gps_date from tag_data."""
         if not tag_data:
             return None
         loc = tag_data.get("used_loc") or {}
@@ -180,14 +178,13 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     await fetch_csrf(self.hass, self.session, self.entry_id)
                     tag_data = await get_device_location(self.hass, self.session, dev_data, self.entry_id or "")
 
-                # ✅ 안정화: 간헐적으로 gps_date가 빠져도 이전 값을 유지 (last_update 안정 표시 목적)
+                # ✅ 안정화: 간헐적으로 gps_date가 빠져도 이전 값을 유지
                 prev_tag = prev_data_all.get(dev_id) if prev_data_all else None
                 prev_loc = (prev_tag or {}).get("used_loc") or {}
                 prev_gps_date = prev_loc.get("gps_date")
 
                 new_loc = (tag_data or {}).get("used_loc") or {}
                 if prev_gps_date is not None and "gps_date" not in new_loc:
-                    # 최소 범위로만 보정(관련 키 1개만)
                     new_loc = dict(new_loc)
                     new_loc["gps_date"] = prev_gps_date
                     tag_data = dict(tag_data or {})
@@ -211,14 +208,23 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
                     new_dt = self._extract_server_gps_date(tag_data)
 
-                    # old가 있고 new가 달라진 경우, 또는 old가 없는데 new를 처음 얻은 경우 -> 성공
-                    changed = (old_dt is not None and new_dt is not None and new_dt != old_dt) or (old_dt is None and new_dt is not None)
+                    changed = (old_dt is not None and new_dt is not None and new_dt != old_dt) or (
+                        old_dt is None and new_dt is not None
+                    )
                     if changed:
                         self._last_update_fetch.pop(dev_id, None)
                         self._last_update_fetch_result[dev_id] = "ok"
                         self.async_update_listeners()
 
                 results[dev_id] = tag_data
+
+            # ✅ 추가(최소 변경): STF가 Set-Cookie로 세션을 회전시키는 경우를 대비해
+            # refresh 성공 시점마다 최신 쿠키를 entry에 저장(재부팅 후 '바로 fail' 방지에 효과적)
+            if self.entry is not None:
+                try:
+                    await persist_cookie_to_entry(self.hass, self.entry, self.session)
+                except Exception as err:
+                    _LOGGER.debug("cookie persist after update failed: %s", err)
 
             return results
 

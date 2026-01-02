@@ -3,21 +3,23 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "1) https://smartthingsfind.samsung.com 로그인\n2) DevTools(F12) → Network\n3) chkLogin.do 선택(필요시 새로고침)\n4) Request Headers → Cookie: 전체 줄 복사\n5) 아래에 붙여넣기",
+        "description": "1) https://smartthingsfind.samsung.com 로그인\n2) DevTools(F12) → Network\n3) chkLogin.do 선택(필요시 새로고침)\n4) Request Headers → Cookie: 전체 줄 복사\n5) 아래에 붙여넣기\n\n⚠️ 중요: 쿠키를 복사한 뒤에는 SmartThings Find 웹사이트(탭/창)를 그대로 열어두지 말고 종료하세요.\n탭이 열린 상태로 오래 유휴(idle)되면 사이트가 세션을 종료하면서 같은 쿠키를 사용하는 Home Assistant도 함께 만료될 수 있습니다.\n권장: 시크릿/프라이빗 창에서 쿠키를 추출하고, 복사 후 즉시 해당 창을 닫기.",
         "data": {
-          "cookie_input": "Cookie header"
+          "cookie": "Cookie header"
         }
       },
       "reauth_confirm": {
         "title": "Re-authentication required",
-        "description": "세션이 만료되었습니다. 새 Cookie header를 붙여넣어 갱신하세요.",
+        "description": "세션이 만료되었습니다. 새 Cookie header를 붙여넣어 갱신하세요.\n\n⚠️ 쿠키를 복사한 뒤에는 SmartThings Find 웹사이트(탭/창)를 열어두지 말고 종료하는 것을 권장합니다.\n열어둔 탭이 유휴 상태가 되면 사이트가 세션을 끊으면서 HA에서도 동일 쿠키가 만료될 수 있습니다.",
         "data": {
-          "cookie_input": "Cookie header"
+          "cookie": "Cookie header"
         }
       }
     },
     "error": {
-      "invalid_auth": "인증 실패. Cookie header를 다시 확인하세요.",
+      "invalid_auth": "인증 실패. Cookie header가 만료되었거나 잘못되었습니다. 다시 추출하여 입력하세요.",
+      "no_devices": "계정에서 기기를 찾지 못했습니다. SmartThings Find에서 기기가 보이는지 확인하세요.",
+      "cannot_connect": "연결 실패. 잠시 후 다시 시도하세요.",
       "unknown": "알 수 없는 오류가 발생했습니다."
     },
     "abort": {
@@ -30,8 +32,8 @@
         "title": "Options",
         "data": {
           "update_interval": "Update interval (seconds)",
-          "active_mode_smarttags": "Active mode for SmartTags",
-          "active_mode_others": "Active mode for other devices"
+          "mode_smarttags": "Active mode for SmartTags",
+          "mode_others": "Active mode for other devices"
         }
       }
     }

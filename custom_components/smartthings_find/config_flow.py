@@ -6,8 +6,8 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import selector
 
 from .const import (
@@ -74,8 +74,10 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             cookie_line = (user_input.get(CONF_COOKIE) or "").strip()
             cookies = parse_cookie_header(cookie_line)
+
+            # 쿠키 입력/형식 문제는 invalid_auth로 통일(사용자 안내 일관성)
             if not cookie_line or not cookies:
-                errors[CONF_COOKIE] = "invalid_cookie"
+                errors["base"] = "invalid_auth"
             else:
                 session = make_session(self.hass)
                 apply_cookies_to_session(session, cookies)
@@ -91,6 +93,9 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             title="SmartThings Find",
                             data={CONF_COOKIE: cookie_line},
                         )
+
+                except ConfigEntryAuthFailed:
+                    errors["base"] = "invalid_auth"
                 except Exception as err:  # noqa: BLE001
                     _LOGGER.exception("Config flow setup failed: %s", err)
                     errors["base"] = "cannot_connect"
@@ -116,8 +121,9 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             cookie_line = (user_input.get(CONF_COOKIE) or "").strip()
             cookies = parse_cookie_header(cookie_line)
+
             if not cookie_line or not cookies:
-                errors[CONF_COOKIE] = "invalid_cookie"
+                errors["base"] = "invalid_auth"
             else:
                 session = make_session(self.hass)
                 apply_cookies_to_session(session, cookies)
@@ -125,6 +131,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 try:
                     await fetch_csrf(self.hass, session, "config_flow")
                     devices = await get_devices(self.hass, session, "config_flow")
+
                     if not devices:
                         errors["base"] = "no_devices"
                     else:
@@ -138,6 +145,9 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                 await self.hass.config_entries.async_reload(entry.entry_id)
 
                         return self.async_abort(reason="reauth_successful")
+
+                except ConfigEntryAuthFailed:
+                    errors["base"] = "invalid_auth"
                 except Exception as err:  # noqa: BLE001
                     _LOGGER.exception("Reauth failed: %s", err)
                     errors["base"] = "cannot_connect"
