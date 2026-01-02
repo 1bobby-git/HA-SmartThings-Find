@@ -12,31 +12,28 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 
 
-def _battery_svg_name(level: int) -> str:
-    """SmartThings Find 웹 UI 배터리 SVG 파일명 추정 매핑."""
-    if level >= 96:
-        return "96_100.svg"
-    if level >= 76:
-        return "76_95.svg"
-    if level >= 56:
-        return "56_75.svg"
-    if level >= 26:
-        return "26_55.svg"
-    if level >= 6:
-        return "6_25.svg"
-    return "0_5.svg"
-
-
-def _battery_entity_picture(level: int | None) -> str | None:
+def _battery_mdi_icon(level: int | None) -> str:
     if level is None:
-        return None
+        return "mdi:battery-unknown"
+
     try:
         lvl = int(level)
     except Exception:
-        return None
+        return "mdi:battery-unknown"
+
     lvl = max(0, min(100, lvl))
-    svg = _battery_svg_name(lvl)
-    return f"https://smartthingsfind.samsung.com/img/device_card/battery/{svg}"
+
+    if lvl == 100:
+        return "mdi:battery"
+
+    # mdi:battery-10/20/.../90
+    step = int((lvl + 5) / 10) * 10
+    step = max(0, min(90, step))
+
+    if step == 0:
+        return "mdi:battery-outline"
+
+    return f"mdi:battery-{step}"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
@@ -72,9 +69,9 @@ class SmartThingsFindBatterySensor(CoordinatorEntity, SensorEntity):
         return (res or {}).get("battery_level")
 
     @property
-    def entity_picture(self) -> str | None:
-        """배터리 상태에 따라 STF 배터리 SVG를 동적으로 적용."""
-        return _battery_entity_picture(self.native_value)
+    def icon(self) -> str:
+        # ✅ 배터리는 mdi 아이콘만 사용
+        return _battery_mdi_icon(self.native_value)
 
 
 class SmartThingsFindLastUpdateSensor(CoordinatorEntity, SensorEntity):
