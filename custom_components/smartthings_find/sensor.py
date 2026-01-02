@@ -8,6 +8,7 @@ from homeassistant.const import PERCENTAGE
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, DATA_DEVICES, DATA_COORDINATOR
 
@@ -44,12 +45,35 @@ def _battery_icon(level: int | None) -> str:
     return "mdi:battery"
 
 
+def _to_dt(v: Any) -> datetime | None:
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v if v.tzinfo else dt_util.as_local(v)
+    if isinstance(v, str):
+        d = dt_util.parse_datetime(v)
+        if d:
+            return d if d.tzinfo else dt_util.as_local(d)
+    return None
+
+
+def _dt_key(v: Any) -> str | None:
+    d = _to_dt(v)
+    if d:
+        try:
+            return dt_util.as_utc(d).isoformat()
+        except Exception:
+            return d.isoformat()
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    return None
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator = data[DATA_COORDINATOR]
     devices = data[DATA_DEVICES]
 
-    # 버튼에서 기록, 센서에서 읽는 저장소
     data.setdefault("last_update_requests", {})
 
     entities: list[SensorEntity] = []
@@ -113,12 +137,12 @@ class SmartThingsFindLastUpdateSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> datetime | None:
-        # ✅ 서버의 마지막 업데이트 시간만 state로 사용
+        # ✅ 서버 gps_date만 state로. 문자열이면 datetime으로 변환해서 UI 갱신 보장.
         res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
         if not res:
             return None
         loc = res.get("used_loc") or {}
-        return loc.get("gps_date")
+        return _to_dt(loc.get("gps_date"))
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -126,24 +150,36 @@ class SmartThingsFindLastUpdateSensor(CoordinatorEntity, SensorEntity):
 
         res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
         loc = (res or {}).get("used_loc") or {}
-        gps_date = loc.get("gps_date")
+        gps_date_raw = loc.get("gps_date")
+        gps_key = _dt_key(gps_date_raw)
         fetched_at = (res or {}).get("fetched_at")
 
         attrs: dict[str, Any] = {
-            "server_last_update": gps_date,
+            "server_last_update_raw": gps_date_raw,
+            "server_last_update_key": gps_key,
             "last_polled_at": fetched_at,
         }
 
         if isinstance(req, dict):
             requested_at = req.get("requested_at")
-            prev_gps_date = req.get("prev_gps_date")
+            prev_key = req.get("prev_gps_key")
+            timeout_at = req.get("timeout_at")
 
-            if gps_date and prev_gps_date and gps_date != prev_gps_date:
+            now = dt_util.utcnow()
+            if isinstance(timeout_at, datetime) and now >= timeout_at:
+                attrs["update_location_status"] = "timeout"
+                attrs["update_location_requested_at"] = requested_at
+                return attrs
+
+            # gps_date가 실제로 변했으면 done
+            if gps_key and prev_key and gps_key != prev_key:
                 self._clear_req()
                 attrs["update_location_status"] = "done"
             else:
                 attrs["update_location_status"] = "waiting_server_timestamp"
                 attrs["update_location_requested_at"] = requested_at
+                if isinstance(requested_at, datetime):
+                    attrs["update_location_wait_s"] = int((now - requested_at).total_seconds())
         else:
             attrs["update_location_status"] = "idle"
 
