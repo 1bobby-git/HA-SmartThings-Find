@@ -2,7 +2,7 @@
   "domain": "smartthings_find",
   "name": "SmartThings Find",
   "after_dependencies": ["http"],
-  "version": "1.0.9",
+  "version": "1.0.10",
   "documentation": "https://github.com/1bobby-git/HA-SmartThings-Find",
   "issue_tracker": "https://github.com/1bobby-git/HA-SmartThings-Find/issues",
   "dependencies": [],
@@ -12,3 +12,4 @@
   "iot_class": "cloud_polling",
   "config_flow": true
 }
+

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 from typing import Any
@@ -107,7 +107,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """
         Home Assistant가 ConfigEntryAuthFailed를 받으면 reauth flow를 시작한다.
         """
-        self._reauth_entry_id = self.context.get("entry_id")
+        self._stf_reauth_entry_id = self.context.get("entry_id")
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -197,3 +197,4 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
         )
 
         return self.async_show_form(step_id="init", data_schema=schema)
+
