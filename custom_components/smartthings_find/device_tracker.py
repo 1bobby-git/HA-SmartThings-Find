@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.components.device_tracker import TrackerEntity, SourceType
+from homeassistant.components.device_tracker.config_entry import TrackerEntity
+from homeassistant.components.device_tracker.const import SourceType
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
@@ -20,120 +21,98 @@ def _normalize_picture_url(url: str | None) -> str | None:
     if not u:
         return None
 
-    # //cdn... 형태
     if u.startswith("//"):
         return "https:" + u
 
-    # /images/... 같은 상대경로
     if u.startswith("/"):
         return _BASE + u
 
     return u
 
 
-def _pick_device_picture(device: dict[str, Any]) -> str | None:
-    # 폰/태그/워치/이어버드 등 케이스별로 키가 달라지는 경우가 있어서 후보를 넓게 잡음
-    candidates = [
-        "entity_picture",
-        "entityPicture",
-        "picture",
-        "pictureUrl",
-        "pictureURL",
-        "image",
-        "imageUrl",
-        "imageURL",
-        "img",
-        "imgUrl",
-        "imgURL",
+def _pick_tracker_picture(dev: dict[str, Any]) -> str | None:
+    data = dev.get("data") or {}
+
+    icons = data.get("icons") or {}
+    colored_icon = icons.get("coloredIcon") or icons.get("icon")
+    pic = _normalize_picture_url(colored_icon)
+    if pic:
+        return pic
+
+    # ✅ 핸드폰만 아이콘 키가 다른 케이스 fallback (아이콘만 보강)
+    for k in (
+        "coloredIcon",
         "icon",
         "iconUrl",
         "iconURL",
-        "thumbnail",
+        "imageUrl",
+        "imageURL",
+        "imgUrl",
+        "imgURL",
+        "pictureUrl",
+        "pictureURL",
         "thumbnailUrl",
         "thumbnailURL",
+        "deviceIcon",
+        "deviceIconUrl",
         "deviceImage",
         "deviceImageUrl",
-    ]
-
-    for k in candidates:
-        if k in device and device.get(k):
-            return _normalize_picture_url(device.get(k))
-
-    # 혹시 nested 형태면(예: device["model"]["imageUrl"])도 최소 대응
-    model = device.get("model") if isinstance(device.get("model"), dict) else None
-    if model:
-        for k in ["imageUrl", "iconUrl", "thumbnailUrl"]:
-            if model.get(k):
-                return _normalize_picture_url(model.get(k))
+    ):
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            pic = _normalize_picture_url(v)
+            if pic:
+                return pic
 
     return None
 
 
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry,
-    async_add_entities: AddEntitiesCallback,
-) -> None:
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     data = hass.data[DOMAIN][entry.entry_id]
     coordinator = data["coordinator"]
+    devices = data["devices"]
 
-    entities: list[TrackerEntity] = []
-
-    devices = coordinator.data.get("devices", [])
+    entities: list[SmartThingsFindTracker] = []
     for dev in devices:
-        entities.append(SmartThingsFindDeviceTracker(coordinator, dev))
-
+        entities.append(SmartThingsFindTracker(coordinator, dev))
     async_add_entities(entities)
 
 
-class SmartThingsFindDeviceTracker(CoordinatorEntity, TrackerEntity):
+class SmartThingsFindTracker(CoordinatorEntity, TrackerEntity):
+    _attr_should_poll = False
     _attr_source_type = SourceType.GPS
+    _attr_has_entity_name = True
+    _attr_icon = "mdi:nfc-search-variant"
 
-    def __init__(self, coordinator, device: dict[str, Any]) -> None:
+    def __init__(self, coordinator, dev: dict[str, Any]) -> None:
         super().__init__(coordinator)
-        self._device = device
-        self._device_id = str(device.get("deviceId") or device.get("id") or device.get("devId") or "")
-        self._name = device.get("name") or device.get("deviceName") or "SmartThings Find"
+        self.dev = dev
+        self._dvce_id = dev["data"]["dvceID"]
 
-        self._attr_unique_id = f"{self._device_id}_tracker"
+        self._attr_unique_id = f"{self._dvce_id}_tracker"
+        self._attr_name = None
+        self._attr_device_info = dev["ha_dev_info"]
 
-    @property
-    def name(self) -> str:
-        return self._name
+        # ✅ STF 아이콘/기기그림은 device_tracker에만 적용 (폰도 포함)
+        pic = _pick_tracker_picture(dev)
+        if pic:
+            self._attr_entity_picture = pic
 
     @property
     def latitude(self) -> float | None:
-        loc = self._device.get("location") if isinstance(self._device.get("location"), dict) else self._device
-        return loc.get("latitude") or loc.get("lat")
+        res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
+        loc = (res or {}).get("used_loc") or {}
+        return loc.get("latitude")
 
     @property
     def longitude(self) -> float | None:
-        loc = self._device.get("location") if isinstance(self._device.get("location"), dict) else self._device
-        return loc.get("longitude") or loc.get("lon") or loc.get("lng")
+        res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
+        loc = (res or {}).get("used_loc") or {}
+        return loc.get("longitude")
 
     @property
     def location_accuracy(self) -> int | None:
-        loc = self._device.get("location") if isinstance(self._device.get("location"), dict) else self._device
-        v = loc.get("accuracy")
-        try:
-            return int(v) if v is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        # 기존 속성 유지가 목적이 아니라 최소만
-        return {}
-
-    @property
-    def entity_picture(self) -> str | None:
-        # ✅ 요청사항: STF 아이콘/그림은 device_tracker에만 적용 유지
-        return _pick_device_picture(self._device)
-
-    @property
-    def device_info(self) -> dict[str, Any]:
-        return {
-            "identifiers": {(DOMAIN, self._device_id)},
-            "name": self._name,
-            "manufacturer": "Samsung",
-        }
+        res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
+        loc = (res or {}).get("used_loc") or {}
+        acc = loc.get("gps_accuracy")
+        return int(acc) if acc is not None else None
