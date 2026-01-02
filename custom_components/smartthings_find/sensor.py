@@ -73,8 +73,10 @@ class SmartThingsFindBatterySensor(CoordinatorEntity, SensorEntity):
 
     @property
     def entity_picture(self) -> str | None:
-        """배터리 상태에 따라 STF 배터리 SVG를 동적으로 적용."""
-        return _battery_entity_picture(self.native_value)
+        """배터리 아이콘은 HA 기본 mdi 배터리 아이콘을 사용한다."""
+        # ✅ 요청사항: STF SVG가 아닌 mdi 배터리 아이콘 반영
+        # device_class=BATTERY + unit=% 조합이면 HA가 자동으로 배터리 mdi 아이콘을 표시한다.
+        return None
 
 
 class SmartThingsFindLastUpdateSensor(CoordinatorEntity, SensorEntity):
@@ -93,8 +95,43 @@ class SmartThingsFindLastUpdateSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> datetime | None:
+        """Server-side last update time (gps_date) only.
+
+        Do NOT fall back to fetched_at because button press triggers refresh quickly and
+        would incorrectly change last update immediately.
+        """
         res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
         if not res:
             return None
         loc = res.get("used_loc") or {}
-        return loc.get("gps_date") or res.get("fetched_at")
+        return loc.get("gps_date")
+
+    @property
+    def icon(self) -> str | None:
+        pending = getattr(self.coordinator, "_last_update_fetch", {}).get(self._dvce_id)
+        if pending:
+            # ✅ 서버 시간 가져오는 중 시각적 표시
+            return "mdi:progress-clock"
+        return self._attr_icon
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        attrs: dict[str, Any] = {}
+
+        pending = getattr(self.coordinator, "_last_update_fetch", {}).get(self._dvce_id)
+        result = getattr(self.coordinator, "_last_update_fetch_result", {}).get(self._dvce_id)
+
+        if pending:
+            attrs["server_time_fetching"] = True
+            attrs["server_time_fetch_started"] = pending.get("started")
+            attrs["server_time_fetch_attempts"] = pending.get("attempts", 0)
+            attrs["server_time_fetch_old"] = pending.get("old")
+            # result는 "fetching"으로 유지
+            attrs["server_time_fetch_result"] = result or "fetching"
+        else:
+            attrs["server_time_fetching"] = False
+            if result:
+                # 마지막 요청 결과를 한 번 보여줌(ok/timeout)
+                attrs["server_time_fetch_result"] = result
+
+        return attrs

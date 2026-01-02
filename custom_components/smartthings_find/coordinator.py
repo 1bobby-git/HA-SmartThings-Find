@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import aiohttp
@@ -87,6 +87,12 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self.devices = devices or []
 
+        # ✅ Update Location UX: 서버 last update(gps_date) "가져오는 중" 상태 저장
+        # - _last_update_fetch: dvce_id -> {"old": iso/None, "started": iso, "attempts": int}
+        # - _last_update_fetch_result: dvce_id -> "fetching"|"ok"|"timeout"
+        self._last_update_fetch: dict[str, dict[str, Any]] = {}
+        self._last_update_fetch_result: dict[str, str] = {}
+
         super().__init__(
             hass,
             _LOGGER,
@@ -126,12 +132,46 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except Exception as e:
             _LOGGER.debug("keepalive unexpected error: %s", e)
 
+    def mark_pending_last_update(self, dvce_id: str, old_gps_date: Any | None) -> None:
+        """Mark that we are waiting for server gps_date to change for this device."""
+        # old_gps_date는 datetime일 가능성이 큼 → iso로 저장(속성 표시용)
+        old_iso = old_gps_date.isoformat() if hasattr(old_gps_date, "isoformat") and old_gps_date else None
+        self._last_update_fetch[str(dvce_id)] = {
+            "old": old_iso,
+            "started": datetime.utcnow().isoformat(),
+            "attempts": 0,
+        }
+        self._last_update_fetch_result[str(dvce_id)] = "fetching"
+        self.async_update_listeners()
+
+    def get_pending_last_update(self, dvce_id: str) -> dict[str, Any] | None:
+        return self._last_update_fetch.get(str(dvce_id))
+
+    def mark_last_update_timeout(self, dvce_id: str) -> None:
+        """Stop fetching indicator with timeout result."""
+        dvce_id = str(dvce_id)
+        if dvce_id in self._last_update_fetch:
+            self._last_update_fetch.pop(dvce_id, None)
+            self._last_update_fetch_result[dvce_id] = "timeout"
+            self.async_update_listeners()
+
+    @staticmethod
+    def _extract_server_gps_date(tag_data: dict[str, Any] | None):
+        """Extract server-side gps_date from tag_data."""
+        if not tag_data:
+            return None
+        loc = tag_data.get("used_loc") or {}
+        return loc.get("gps_date")
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data for all devices."""
         try:
             results: dict[str, Any] = {}
+            prev_data_all = self.data or {}
+
             for dev in self.devices:
                 dev_data = dev["data"]
+                dev_id = str(dev_data.get("dvceID"))
 
                 try:
                     tag_data = await get_device_location(self.hass, self.session, dev_data, self.entry_id or "")
@@ -140,7 +180,45 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     await fetch_csrf(self.hass, self.session, self.entry_id)
                     tag_data = await get_device_location(self.hass, self.session, dev_data, self.entry_id or "")
 
-                results[str(dev_data.get("dvceID"))] = tag_data
+                # ✅ 안정화: 간헐적으로 gps_date가 빠져도 이전 값을 유지 (last_update 안정 표시 목적)
+                prev_tag = prev_data_all.get(dev_id) if prev_data_all else None
+                prev_loc = (prev_tag or {}).get("used_loc") or {}
+                prev_gps_date = prev_loc.get("gps_date")
+
+                new_loc = (tag_data or {}).get("used_loc") or {}
+                if prev_gps_date is not None and "gps_date" not in new_loc:
+                    # 최소 범위로만 보정(관련 키 1개만)
+                    new_loc = dict(new_loc)
+                    new_loc["gps_date"] = prev_gps_date
+                    tag_data = dict(tag_data or {})
+                    tag_data["used_loc"] = new_loc
+
+                # ✅ pending 처리: 서버 gps_date가 "변했을 때만" fetching 해제
+                pending = self._last_update_fetch.get(dev_id)
+                if pending is not None:
+                    try:
+                        pending["attempts"] = int(pending.get("attempts", 0)) + 1
+                    except Exception:
+                        pending["attempts"] = 1
+
+                    old_iso = pending.get("old")
+                    old_dt = None
+                    if old_iso:
+                        try:
+                            old_dt = datetime.fromisoformat(old_iso)
+                        except Exception:
+                            old_dt = None
+
+                    new_dt = self._extract_server_gps_date(tag_data)
+
+                    # old가 있고 new가 달라진 경우, 또는 old가 없는데 new를 처음 얻은 경우 -> 성공
+                    changed = (old_dt is not None and new_dt is not None and new_dt != old_dt) or (old_dt is None and new_dt is not None)
+                    if changed:
+                        self._last_update_fetch.pop(dev_id, None)
+                        self._last_update_fetch_result[dev_id] = "ok"
+                        self.async_update_listeners()
+
+                results[dev_id] = tag_data
 
             return results
 

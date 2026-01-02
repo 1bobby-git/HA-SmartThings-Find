@@ -38,8 +38,18 @@ class SmartThingsFindTracker(CoordinatorEntity, TrackerEntity):
         self._attr_device_info = dev["ha_dev_info"]
 
         # ✅ STF 아이콘/기기그림은 device_tracker에만 적용
-        icons = dev["data"].get("icons") or {}
-        colored_icon = icons.get("coloredIcon") or icons.get("icon")
+        data = dev.get("data") or {}
+        icons = data.get("icons") or {}
+
+        # 기존: icons["coloredIcon"] 또는 icons["icon"]
+        # ✅ 폰(device)에서 키 구조가 다를 수 있어 최소 후보만 확장
+        colored_icon = (
+            icons.get("coloredIcon")
+            or icons.get("icon")
+            or data.get("coloredIcon")
+            or data.get("icon")
+            or data.get("deviceIcon")
+        )
         if colored_icon:
             self._attr_entity_picture = colored_icon
 

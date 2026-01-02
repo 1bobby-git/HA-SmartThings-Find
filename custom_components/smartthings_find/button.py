@@ -185,7 +185,63 @@ class UpdateLocationButton(_STFOperationButton):
         self._attr_unique_id = f"stf_update_location_{self._dvce_id}"
         self._attr_name = f"{model_name} Update Location"
 
+    def _get_current_server_gps_date(self):
+        """Read current server gps_date from coordinator.data (may be None)."""
+        coordinator = self.hass.data[DOMAIN][self._entry_id].get(DATA_COORDINATOR)
+        if coordinator is None or not coordinator.data:
+            return None
+        res = coordinator.data.get(self._dvce_id) if coordinator.data else None
+        loc = (res or {}).get("used_loc") or {}
+        return loc.get("gps_date")
+
     async def async_press(self) -> None:
+        coordinator = self.hass.data[DOMAIN][self._entry_id].get(DATA_COORDINATOR)
+
+        # ✅ pending 시작: '서버 last update(gps_date) 갱신'을 기다린다는 표시
+        old_gps_date = self._get_current_server_gps_date()
+        if coordinator is not None and hasattr(coordinator, "mark_pending_last_update"):
+            try:
+                coordinator.mark_pending_last_update(self._dvce_id, old_gps_date)
+            except Exception as err:
+                _LOGGER.debug("mark_pending_last_update failed: %s", err)
+
         ok = await self._post_operation(OP_CHECK_CONNECTION_WITH_LOCATION)
         if ok:
             await self._kick_refresh()
+
+            # ✅ 서버 반영이 늦을 수 있어 추가 refresh를 더 걸어줌(너무 공격적이지 않게)
+            if coordinator is not None:
+                self.hass.async_create_task(self._poll_server_last_update(coordinator))
+
+    async def _poll_server_last_update(self, coordinator) -> None:
+        """Poll a few times until server gps_date changes, then stop.
+        If not changed within the window, mark timeout so user can see it.
+        """
+        # _kick_refresh()에서 2s/6s는 이미 돌고 있으니, 여기선 좀 더 긴 구간만
+        delays = (15, 30, 45)
+
+        for delay_s in delays:
+            try:
+                await asyncio.sleep(delay_s)
+            except Exception:
+                return
+
+            # 이미 성공/해제됐다면 종료
+            try:
+                if hasattr(coordinator, "get_pending_last_update") and coordinator.get_pending_last_update(self._dvce_id) is None:
+                    return
+            except Exception:
+                # get_pending 실패 시에도 refresh는 시도해봄
+                pass
+
+            try:
+                await coordinator.async_request_refresh()
+            except Exception as err:
+                _LOGGER.debug("Poll refresh failed (%ss): %s", delay_s, err)
+
+        # 여기까지 왔으면 아직 pending일 가능성이 있음 → timeout 표기 후 종료
+        try:
+            if hasattr(coordinator, "mark_last_update_timeout"):
+                coordinator.mark_last_update_timeout(self._dvce_id)
+        except Exception as err:
+            _LOGGER.debug("mark_last_update_timeout failed: %s", err)
