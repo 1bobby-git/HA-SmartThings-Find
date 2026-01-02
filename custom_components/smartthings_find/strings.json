@@ -3,39 +3,35 @@
   "config": {
     "step": {
       "user": {
-        "title": "Set up SmartThings Find",
-        "description": "Start SmartThings Find login. You will be asked to scan a QR code."
+        "title": "SmartThings Find 설정 (쿠키 입력)",
+        "description": "아래에 **SmartThings Find 쿠키**를 붙여넣어 주세요.\n\n### 쿠키 가져오는 방법(PC 브라우저 권장)\n1. 브라우저에서 SmartThings Find에 로그인합니다.\n2. 개발자도구(F12) → **Network(네트워크)** 탭\n3. 페이지를 새로고침(F5)\n4. `smartthingsfind.samsung.com`으로 가는 요청(예: `chkLogin.do`, `getDeviceList.do`) 선택\n5. Request Headers에서 **Cookie** 값을 복사\n\n> ✅ `Cookie:` 라벨은 빼고 **값만** 붙여넣어도 됩니다.\n\n### 주의사항\n- 쿠키는 만료될 수 있습니다. 만료 시 통합이 **재인증(쿠키 재입력)**을 요구합니다.\n- 쿠키는 민감 정보입니다. 외부에 공유하지 마세요.",
+        "data": {
+          "cookie": "Cookie (요청 헤더 값)"
+        }
       },
       "reauth_confirm": {
-        "title": "Re-authentication required",
-        "description": "Your SmartThings Find session expired. Continue to re-authenticate.",
-        "data": {}
-      },
-      "finish": {
-        "title": "Finish",
-        "description": "If an error occurs, it will be shown below."
+        "title": "재인증 필요 (쿠키 만료)",
+        "description": "세션이 만료되었습니다. **새 쿠키**를 다시 붙여넣어 주세요.\n\n(방법은 초기 설정과 동일: 브라우저 개발자도구 → Network → Cookie 복사)",
+        "data": {
+          "cookie": "Cookie (새 값)"
+        }
       }
     },
-    "progress": {
-      "task_stage_one": "Preparing login…",
-      "task_stage_two": "Waiting for QR confirmation…"
-    },
     "abort": {
-      "single_instance_allowed": "Only one instance is allowed."
+      "single_instance_allowed": "하나의 인스턴스만 허용됩니다."
     },
     "error": {
-      "login_stage_one_failed": "Failed to start login. Try again.",
-      "login_stage_two_failed": "Login confirmation failed or timed out. Try again.",
-      "missing_cookie": "Missing cookie. Please re-authenticate.",
-      "invalid_cookie": "Invalid cookie. Please re-authenticate.",
-      "unknown": "Unknown error."
+      "missing_cookie": "쿠키가 비어 있습니다. Cookie 값을 입력해 주세요.",
+      "invalid_cookie": "쿠키가 유효하지 않거나 만료되었습니다. 새 쿠키로 다시 시도해 주세요.",
+      "cannot_connect": "SmartThings Find에 연결할 수 없습니다. 네트워크/서버 상태를 확인하세요.",
+      "unknown": "알 수 없는 오류입니다."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Options",
-        "description": "Configure update interval and active mode."
+        "title": "옵션",
+        "description": "업데이트 간격과 활성 모드를 설정합니다."
       }
     }
   }
