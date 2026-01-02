@@ -8,6 +8,7 @@ from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
@@ -27,15 +28,10 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up minimal SmartThings Find buttons.
-
-    Keep only:
-    - Ring
-    - Stop Ring
-    - Update Location
-    """
     data = hass.data[DOMAIN][entry.entry_id]
     devices = data[DATA_DEVICES]
+
+    data.setdefault("last_update_requests", {})
 
     entities: list[ButtonEntity] = []
     for device in devices:
@@ -47,12 +43,6 @@ async def async_setup_entry(
 
 
 class _STFOperationButton(ButtonEntity):
-    """Common helper to call STF addOperation.do with CSRF handling.
-
-    NOTE: Do NOT set entity_picture here.
-    Only device_tracker should show STF icon.
-    """
-
     def __init__(self, hass: HomeAssistant, entry_id: str, device: dict[str, Any]) -> None:
         self.hass = hass
         self._entry_id = entry_id
@@ -114,18 +104,8 @@ class _STFOperationButton(ButtonEntity):
             return False
 
     async def _kick_refresh(self) -> None:
-        """Force coordinator refresh so sensors reflect latest server state.
-
-        Do one immediate refresh, then schedule delayed refreshes in background.
-        """
         coordinator = self.hass.data[DOMAIN][self._entry_id].get(DATA_COORDINATOR)
         if coordinator is None:
-            return
-
-        try:
-            await coordinator.async_request_refresh()
-        except Exception as err:
-            _LOGGER.debug("Immediate coordinator refresh failed: %s", err)
             return
 
         async def _delayed_refresh(delay_s: int) -> None:
@@ -135,9 +115,14 @@ class _STFOperationButton(ButtonEntity):
             except Exception as err:
                 _LOGGER.debug("Delayed refresh (%ss) failed: %s", delay_s, err)
 
-        # STF 서버 반영 지연 대비(버튼 응답은 빠르게 종료)
-        self.hass.async_create_task(_delayed_refresh(2))
-        self.hass.async_create_task(_delayed_refresh(6))
+        # 즉시 1회 + 지연 다회(서버 반영 지연 대비)
+        try:
+            await coordinator.async_request_refresh()
+        except Exception as err:
+            _LOGGER.debug("Immediate coordinator refresh failed: %s", err)
+
+        for d in (2, 6, 12, 20, 35, 60):
+            self.hass.async_create_task(_delayed_refresh(d))
 
 
 class RingStartButton(_STFOperationButton):
@@ -185,7 +170,36 @@ class UpdateLocationButton(_STFOperationButton):
         self._attr_unique_id = f"stf_update_location_{self._dvce_id}"
         self._attr_name = f"{model_name} Update Location"
 
+    def _mark_waiting_server_timestamp(self) -> None:
+        entry_data = self.hass.data[DOMAIN].get(self._entry_id, {})
+        coordinator = entry_data.get(DATA_COORDINATOR)
+        reqs = entry_data.setdefault("last_update_requests", {})
+
+        res = None
+        if coordinator and getattr(coordinator, "data", None):
+            res = coordinator.data.get(self._dvce_id)
+
+        prev_raw = (((res or {}).get("used_loc") or {}).get("gps_date")) if res else None
+
+        requested_at = dt_util.utcnow()
+        reqs[self._dvce_id] = {
+            "requested_at": requested_at,
+            "prev_gps_key": (dt_util.as_utc(prev_raw).isoformat() if isinstance(prev_raw, dt_util.dt.datetime) else str(prev_raw) if prev_raw is not None else None),
+            "timeout_at": requested_at + dt_util.dt.timedelta(seconds=120),
+        }
+
+    def _clear_waiting(self) -> None:
+        entry_data = self.hass.data[DOMAIN].get(self._entry_id, {})
+        reqs = entry_data.get("last_update_requests", {})
+        if isinstance(reqs, dict):
+            reqs.pop(self._dvce_id, None)
+
     async def async_press(self) -> None:
+        self._mark_waiting_server_timestamp()
+
         ok = await self._post_operation(OP_CHECK_CONNECTION_WITH_LOCATION)
         if ok:
             await self._kick_refresh()
+            return
+
+        self._clear_waiting()

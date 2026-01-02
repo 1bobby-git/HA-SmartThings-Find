@@ -10,6 +10,73 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 
+_BASE = "https://smartthingsfind.samsung.com"
+
+
+def _normalize_picture_url(url: str | None) -> str | None:
+    if not url:
+        return None
+
+    u = str(url).strip()
+    if not u:
+        return None
+
+    if u.startswith("//"):
+        return "https:" + u
+    if u.startswith("/"):
+        return _BASE + u
+    return u
+
+
+def _extract_url(v: Any) -> str | None:
+    # coloredIcon이 dict로 오는 케이스 대응: {"url": "..."} / {"path": "..."} 등
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        for k in ("url", "href", "src", "path"):
+            if isinstance(v.get(k), str) and v.get(k).strip():
+                return v.get(k)
+    return None
+
+
+def _pick_entity_picture(dev: dict[str, Any]) -> str | None:
+    data = dev.get("data") or {}
+
+    icons = data.get("icons") or {}
+    if isinstance(icons, dict):
+        # 1) 기본(정상 동작하던) 키들
+        for k in ("coloredIcon", "coloredIconUrl", "coloredIconURL", "icon", "iconUrl", "iconURL"):
+            raw = _extract_url(icons.get(k))
+            pic = _normalize_picture_url(raw)
+            if pic:
+                return pic
+
+    # 2) 폰 등에서 data 레벨로 내려오는 fallback
+    for k in (
+        "coloredIcon",
+        "coloredIconUrl",
+        "coloredIconURL",
+        "icon",
+        "iconUrl",
+        "iconURL",
+        "imageUrl",
+        "imageURL",
+        "imgUrl",
+        "imgURL",
+        "pictureUrl",
+        "pictureURL",
+        "thumbnailUrl",
+        "thumbnailURL",
+        "deviceIconUrl",
+        "deviceImageUrl",
+    ):
+        raw = _extract_url(data.get(k))
+        pic = _normalize_picture_url(raw)
+        if pic:
+            return pic
+
+    return None
+
 
 def _normalize_icon_url(url: str | None) -> str | None:
     if not url:

@@ -5,10 +5,11 @@
   "version": "1.0.11",
   "documentation": "https://github.com/1bobby-git/HA-SmartThings-Find",
   "issue_tracker": "https://github.com/1bobby-git/HA-SmartThings-Find/issues",
+  "dependencies": [],
   "integration_type": "hub",
   "codeowners": ["@1bobby-git"],
   "requirements": [],
   "iot_class": "cloud_polling",
   "config_flow": true
 }
- 
+
