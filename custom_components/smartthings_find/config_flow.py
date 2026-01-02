@@ -1,209 +1,198 @@
+"""Config flow for SmartThings Find."""
+
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.data_entry_flow import FlowResult
-from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers import selector
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import callback
 
-from .const import (
-    DOMAIN,
-    CONF_COOKIE,
-    CONF_UPDATE_INTERVAL,
-    CONF_UPDATE_INTERVAL_DEFAULT,
-    CONF_ACTIVE_MODE_SMARTTAGS,
-    CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT,
-    CONF_ACTIVE_MODE_OTHERS,
-    CONF_ACTIVE_MODE_OTHERS_DEFAULT,
-)
-
-from .utils import (  # type: ignore
-    parse_cookie_header,
-    apply_cookies_to_session,
-    fetch_csrf,
-    make_session,
-    get_devices,
-)
+from .const import DOMAIN, CONF_JSESSIONID
+from .utils import do_login_stage_one, do_login_stage_two, gen_qr_code_base64
 
 _LOGGER = logging.getLogger(__name__)
 
-# Options UI 전용(저장 키와 분리)
-_OPT_MODE_SMARTTAGS = "mode_smarttags"
-_OPT_MODE_OTHERS = "mode_others"
 
-_MODE_PASSIVE = "passive"
-_MODE_ACTIVE = "active"
-
-
-def _bool_to_mode(value: bool) -> str:
-    return _MODE_ACTIVE if value else _MODE_PASSIVE
+# 옵션 키(레포 버전에 따라 없을 수 있어 안전하게 fallback)
+try:
+    from .const import CONF_UPDATE_INTERVAL, CONF_ACTIVE_MODE  # type: ignore
+except Exception:  # pragma: no cover
+    CONF_UPDATE_INTERVAL = "update_interval"
+    CONF_ACTIVE_MODE = "active_mode"
 
 
-def _mode_to_bool(value: str) -> bool:
-    return value == _MODE_ACTIVE
-
-
-def _mode_selector() -> selector.SelectSelector:
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            mode=selector.SelectSelectorMode.DROPDOWN,
-            options=[
-                selector.SelectOptionDict(
-                    value=_MODE_PASSIVE,
-                    label="패시브 (서버에 마지막으로 보고된 위치만 조회, 배터리 영향 적음)",
-                ),
-                selector.SelectOptionDict(
-                    value=_MODE_ACTIVE,
-                    label="액티브 (위치 업데이트 요청 전송, 정확도/즉시성↑ 배터리 영향↑)",
-                ),
-            ],
-        ),
-    )
+DEFAULT_UPDATE_INTERVAL = 120  # seconds
+DEFAULT_ACTIVE_MODE = True
 
 
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for SmartThings Find."""
+
     VERSION = 1
+    CONNECTION_CLASS = config_entries.CONN_CLASS_CLOUD_POLL
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        errors: dict[str, str] = {}
+    def __init__(self) -> None:
+        self._reauth_entry: ConfigEntry | None = None  # ✅ reauth 대상 entry를 직접 저장
+        self._task_stage_one: asyncio.Task | None = None
+        self._task_stage_two: asyncio.Task | None = None
 
-        if user_input is not None:
-            cookie_line = (user_input.get(CONF_COOKIE) or "").strip()
-            cookies = parse_cookie_header(cookie_line)
+        self._qr_url: str | None = None
+        self._session = None
+        self._jsessionid: str | None = None
+        self._error: str | None = None
 
-            # 쿠키 입력/형식 문제는 invalid_auth로 통일(사용자 안내 일관성)
-            if not cookie_line or not cookies:
-                errors["base"] = "invalid_auth"
+    async def _do_stage_one(self) -> None:
+        """Login stage 1: create session + fetch QR url."""
+        _LOGGER.debug("Running login stage 1")
+        try:
+            stage_one_res = await do_login_stage_one(self.hass)
+            if stage_one_res is not None:
+                self._session, self._qr_url = stage_one_res
             else:
-                session = make_session(self.hass)
-                apply_cookies_to_session(session, cookies)
+                self._error = "login_stage_one_failed"
+                _LOGGER.warning("Login stage 1 failed")
+        except Exception as e:  # pragma: no cover
+            self._error = "login_stage_one_failed"
+            _LOGGER.error("Exception in stage 1: %s", e, exc_info=True)
 
-                try:
-                    await fetch_csrf(self.hass, session, "config_flow")
-                    devices = await get_devices(self.hass, session, "config_flow")
+    async def _do_stage_two(self) -> None:
+        """Login stage 2: poll QR + get JSESSIONID."""
+        _LOGGER.debug("Running login stage 2")
+        try:
+            if not self._session:
+                self._error = "login_stage_two_failed"
+                return
 
-                    if not devices:
-                        errors["base"] = "no_devices"
-                    else:
-                        return self.async_create_entry(
-                            title="SmartThings Find",
-                            data={CONF_COOKIE: cookie_line},
-                        )
+            stage_two_res = await do_login_stage_two(self._session)
+            if stage_two_res is not None:
+                self._jsessionid = stage_two_res
+                _LOGGER.info("Login successful")
+            else:
+                self._error = "login_stage_two_failed"
+                _LOGGER.warning("Login stage 2 failed")
+        except Exception as e:  # pragma: no cover
+            self._error = "login_stage_two_failed"
+            _LOGGER.error("Exception in stage 2: %s", e, exc_info=True)
 
-                except ConfigEntryAuthFailed:
-                    errors["base"] = "invalid_auth"
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.exception("Config flow setup failed: %s", err)
-                    errors["base"] = "cannot_connect"
-                finally:
-                    try:
-                        await session.close()
-                    except Exception:  # noqa: BLE001
-                        pass
+    async def async_step_user(self, user_input: dict[str, Any] | None = None):
+        """First step: start stage 1 and show progress."""
+        # user_input은 사용하지 않지만, reauth_confirm에서 동일 step으로 진입시키기 위해 유지
+        if self._task_stage_one is None:
+            self._task_stage_one = self.hass.async_create_task(self._do_stage_one())
 
-        schema = vol.Schema({vol.Required(CONF_COOKIE): str})
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        if not self._task_stage_one.done():
+            return self.async_show_progress(
+                progress_action="task_stage_one",
+                progress_task=self._task_stage_one,
+            )
 
-    async def async_step_reauth(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """
-        Home Assistant가 ConfigEntryAuthFailed를 받으면 reauth flow를 시작한다.
-        """
-        self._reauth_entry_id = self.context.get("entry_id")
+        # stage 1 완료
+        if self._error:
+            # finish에서 에러 표기
+            return self.async_show_progress_done(next_step_id="finish")
+
+        return self.async_show_progress_done(next_step_id="auth_stage_two")
+
+    async def async_step_auth_stage_two(self, user_input: dict[str, Any] | None = None):
+        """Second step: start stage 2 and show QR / progress."""
+        if self._task_stage_two is None:
+            self._task_stage_two = self.hass.async_create_task(self._do_stage_two())
+
+        if not self._task_stage_two.done():
+            qr_url = self._qr_url or ""
+            return self.async_show_progress(
+                progress_action="task_stage_two",
+                progress_task=self._task_stage_two,
+                description_placeholders={
+                    "qr_code": gen_qr_code_base64(qr_url) if qr_url else "",
+                    "url": qr_url,
+                    "code": (qr_url.split("/")[-1] if "/" in qr_url else ""),
+                },
+            )
+
+        return self.async_show_progress_done(next_step_id="finish")
+
+    async def async_step_finish(self, user_input: dict[str, Any] | None = None):
+        """Final step: create entry or update existing entry on reauth."""
+        if self._error:
+            # strings.json에 정의된 base error key를 쓰는 방식(기존 방식 유지)
+            return self.async_show_form(step_id="finish", errors={"base": self._error})
+
+        data = {CONF_JSESSIONID: self._jsessionid}
+
+        # ✅ reauth의 경우: 기존 entry 업데이트 후 reload + abort
+        if self._reauth_entry is not None:
+            return self.async_update_reload_and_abort(self._reauth_entry, data=data)
+
+        # 최초 설정
+        return self.async_create_entry(title="SmartThings Find", data=data)
+
+    async def async_step_reauth(self, user_input: dict[str, Any] | None = None):
+        """Reauth step called by Home Assistant when ConfigEntryAuthFailed occurs."""
+        entry_id = self.context.get("entry_id")
+        if entry_id:
+            self._reauth_entry = self.hass.config_entries.async_get_entry(entry_id)
+
+        # reauth에서는 이전 태스크/상태 초기화
+        self._task_stage_one = None
+        self._task_stage_two = None
+        self._qr_url = None
+        self._session = None
+        self._jsessionid = None
+        self._error = None
+
         return await self.async_step_reauth_confirm()
 
-    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        errors: dict[str, str] = {}
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None):
+        """Show a confirmation form, then proceed to normal login."""
+        if user_input is None:
+            return self.async_show_form(
+                step_id="reauth_confirm",
+                data_schema=vol.Schema({}),
+            )
+        # 확인 누르면 user step으로 이어서 QR 로그인 진행
+        return await self.async_step_user()
+
+
+class SmartThingsFindOptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options flow (avoid setting read-only properties in newer HA)."""
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        self._entry = entry  # ✅ self.config_entry에 대입하지 않음(최신 HA에서 깨질 수 있음)
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None):
+        options = dict(self._entry.options)
 
         if user_input is not None:
-            cookie_line = (user_input.get(CONF_COOKIE) or "").strip()
-            cookies = parse_cookie_header(cookie_line)
-
-            if not cookie_line or not cookies:
-                errors["base"] = "invalid_auth"
-            else:
-                session = make_session(self.hass)
-                apply_cookies_to_session(session, cookies)
-
-                try:
-                    await fetch_csrf(self.hass, session, "config_flow")
-                    devices = await get_devices(self.hass, session, "config_flow")
-
-                    if not devices:
-                        errors["base"] = "no_devices"
-                    else:
-                        entry_id = getattr(self, "_reauth_entry_id", None)
-                        if entry_id:
-                            entry = self.hass.config_entries.async_get_entry(entry_id)
-                            if entry:
-                                new_data = dict(entry.data)
-                                new_data[CONF_COOKIE] = cookie_line
-                                self.hass.config_entries.async_update_entry(entry, data=new_data)
-                                await self.hass.config_entries.async_reload(entry.entry_id)
-
-                        return self.async_abort(reason="reauth_successful")
-
-                except ConfigEntryAuthFailed:
-                    errors["base"] = "invalid_auth"
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.exception("Reauth failed: %s", err)
-                    errors["base"] = "cannot_connect"
-                finally:
-                    try:
-                        await session.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-
-        schema = vol.Schema({vol.Required(CONF_COOKIE): str})
-        return self.async_show_form(step_id="reauth_confirm", data_schema=schema, errors=errors)
-
-    @staticmethod
-    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
-        return SmartThingsFindOptionsFlow(config_entry)
-
-
-class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        # ❗ HA 내부에 config_entry property가 있어서 setter로 넣으면 에러남
-        self._config_entry = config_entry
-
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        if user_input is not None:
-            new_options = dict(self._config_entry.options)
-
-            update_interval = user_input.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
-            smarttags_mode = user_input.get(_OPT_MODE_SMARTTAGS, _bool_to_mode(CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT))
-            others_mode = user_input.get(_OPT_MODE_OTHERS, _bool_to_mode(CONF_ACTIVE_MODE_OTHERS_DEFAULT))
-
-            new_options[CONF_UPDATE_INTERVAL] = int(update_interval)
-            new_options[CONF_ACTIVE_MODE_SMARTTAGS] = _mode_to_bool(str(smarttags_mode))
-            new_options[CONF_ACTIVE_MODE_OTHERS] = _mode_to_bool(str(others_mode))
-
-            return self.async_create_entry(title="", data=new_options)
-
-        active_smarttags = self._config_entry.options.get(
-            CONF_ACTIVE_MODE_SMARTTAGS, CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT
-        )
-        active_others = self._config_entry.options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT)
+            options.update(user_input)
+            return self.async_create_entry(title="", data=options)
 
         schema = vol.Schema(
             {
-                vol.Required(
+                vol.Optional(
                     CONF_UPDATE_INTERVAL,
-                    default=self._config_entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
-                ): vol.All(vol.Coerce(int), vol.Clamp(min=15, max=86400)),
-                vol.Required(
-                    _OPT_MODE_SMARTTAGS,
-                    default=_bool_to_mode(bool(active_smarttags)),
-                ): _mode_selector(),
-                vol.Required(
-                    _OPT_MODE_OTHERS,
-                    default=_bool_to_mode(bool(active_others)),
-                ): _mode_selector(),
+                    default=options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
+                ): vol.Coerce(int),
+                vol.Optional(
+                    CONF_ACTIVE_MODE,
+                    default=options.get(CONF_ACTIVE_MODE, DEFAULT_ACTIVE_MODE),
+                ): bool,
             }
         )
 
         return self.async_show_form(step_id="init", data_schema=schema)
+
+
+@callback
+def async_get_options_flow(config_entry: ConfigEntry) -> SmartThingsFindOptionsFlowHandler:
+    """Return the options flow handler."""
+    return SmartThingsFindOptionsFlowHandler(config_entry)
+
+
+# HA가 이 함수명을 찾는 경우도 있어서(레포/HA 버전 차이 대응) 같이 제공
+SmartThingsFindConfigFlow.async_get_options_flow = staticmethod(async_get_options_flow)  # type: ignore
