@@ -180,9 +180,14 @@ async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, en
     """
     hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})
 
+    # ✅ 항상 csrf 확인/갱신 (여기서 fail이면 ConfigEntryAuthFailed)
     csrf = hass.data[DOMAIN][entry_id].get("_csrf")
     if not csrf:
         csrf = await fetch_csrf(hass, session, entry_id)
+    else:
+        # csrf가 있어도 세션이 죽었을 수 있으니 chkLogin을 한 번 더 가볍게 확인
+        # (너무 공격적이지 않게: 실패하면 여기서 바로 예외로 reauth 유도)
+        await fetch_csrf(hass, session, entry_id)
 
     url = URL_DEVICE_LIST.update_query({"_csrf": csrf})
     async with session.post(url, headers={"Accept": "application/json"}, data={}) as resp:

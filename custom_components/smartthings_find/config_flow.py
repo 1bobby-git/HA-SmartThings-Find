@@ -15,6 +15,8 @@ from .const import (
     CONF_COOKIE,
     CONF_UPDATE_INTERVAL,
     CONF_UPDATE_INTERVAL_DEFAULT,
+    CONF_KEEPALIVE_INTERVAL,
+    CONF_KEEPALIVE_INTERVAL_DEFAULT,
     CONF_ACTIVE_MODE_SMARTTAGS,
     CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT,
     CONF_ACTIVE_MODE_OTHERS,
@@ -175,10 +177,12 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
             new_options = dict(self._config_entry.options)
 
             update_interval = user_input.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
+            keepalive_interval = user_input.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT)
             smarttags_mode = user_input.get(_OPT_MODE_SMARTTAGS, _bool_to_mode(CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT))
             others_mode = user_input.get(_OPT_MODE_OTHERS, _bool_to_mode(CONF_ACTIVE_MODE_OTHERS_DEFAULT))
 
             new_options[CONF_UPDATE_INTERVAL] = int(update_interval)
+            new_options[CONF_KEEPALIVE_INTERVAL] = int(keepalive_interval)
             new_options[CONF_ACTIVE_MODE_SMARTTAGS] = _mode_to_bool(str(smarttags_mode))
             new_options[CONF_ACTIVE_MODE_OTHERS] = _mode_to_bool(str(others_mode))
 
@@ -195,6 +199,11 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
                     CONF_UPDATE_INTERVAL,
                     default=self._config_entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
                 ): vol.All(vol.Coerce(int), vol.Clamp(min=15, max=86400)),
+                # ✅ NEW
+                vol.Required(
+                    CONF_KEEPALIVE_INTERVAL,
+                    default=self._config_entry.options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT),
+                ): vol.All(vol.Coerce(int), vol.Clamp(min=60, max=86400)),
                 vol.Required(
                     _OPT_MODE_SMARTTAGS,
                     default=_bool_to_mode(bool(active_smarttags)),

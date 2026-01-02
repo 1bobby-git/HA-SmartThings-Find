@@ -18,6 +18,10 @@ CONF_JSESSIONID: Final = "jsessionid"
 CONF_UPDATE_INTERVAL: Final = "update_interval"
 CONF_UPDATE_INTERVAL_DEFAULT: Final = 120  # seconds
 
+# ✅ NEW: keepalive interval (seconds)
+CONF_KEEPALIVE_INTERVAL: Final = "keepalive_interval"
+CONF_KEEPALIVE_INTERVAL_DEFAULT: Final = 300  # seconds (5 min)
+
 # (저장 구조는 BOOL 유지)
 CONF_ACTIVE_MODE_SMARTTAGS: Final = "active_mode_smarttags"
 CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT: Final = True
@@ -35,6 +39,9 @@ CONF_ST_IDENTIFIER: Final = "st_identifier"
 DATA_SESSION: Final = "session"
 DATA_COORDINATOR: Final = "coordinator"
 DATA_DEVICES: Final = "devices"
+
+# ✅ NEW: keepalive unsubscribe handle key
+DATA_KEEPALIVE_UNSUB: Final = "keepalive_unsub"
 
 # ----------------------------
 # Battery mapping (서버 응답 문자열 -> 퍼센트)

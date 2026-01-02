@@ -7,6 +7,7 @@ from typing import Any
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
@@ -65,6 +66,11 @@ class _STFOperationButton(ButtonEntity):
 
         self._attr_device_info = device.get("ha_dev_info")
 
+    def _start_reauth(self) -> None:
+        entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        if entry:
+            entry.async_start_reauth(self.hass)
+
     async def _get_session_and_csrf(self):
         entry_data = self.hass.data[DOMAIN].get(self._entry_id, {})
         session = entry_data.get(DATA_SESSION) or entry_data.get("session")
@@ -76,7 +82,12 @@ class _STFOperationButton(ButtonEntity):
 
         if not csrf_token:
             _LOGGER.debug("No CSRF token cached; attempting to fetch a new one.")
-            await fetch_csrf(self.hass, session, self._entry_id)
+            try:
+                await fetch_csrf(self.hass, session, self._entry_id)
+            except ConfigEntryAuthFailed:
+                _LOGGER.debug("Auth failed while fetching CSRF; starting reauth")
+                self._start_reauth()
+                return None, None
             csrf_token = self.hass.data[DOMAIN][self._entry_id].get("_csrf")
 
         return session, csrf_token
@@ -106,7 +117,11 @@ class _STFOperationButton(ButtonEntity):
                     return True
 
                 _LOGGER.warning("Operation %s failed (HTTP %s). Refreshing CSRF.", operation, response.status)
-                await fetch_csrf(self.hass, session, self._entry_id)
+                try:
+                    await fetch_csrf(self.hass, session, self._entry_id)
+                except ConfigEntryAuthFailed:
+                    _LOGGER.debug("Auth failed while refreshing CSRF; starting reauth")
+                    self._start_reauth()
                 return False
 
         except Exception as err:
