@@ -64,6 +64,10 @@ def _mode_selector() -> selector.SelectSelector:
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
+    # ✅ HA Core에서 _reauth_entry_id는 setter 없는 property일 수 있어 충돌함
+    # 통합 전용 변수명으로 보관
+    _stf_reauth_entry_id: str | None = None
+
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         errors: dict[str, str] = {}
 
@@ -108,7 +112,8 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """
         Home Assistant가 ConfigEntryAuthFailed를 받으면 reauth flow를 시작한다.
         """
-        self._reauth_entry_id = self.context.get("entry_id")
+        # ✅ 기존 self._reauth_entry_id = ... 는 HA 코어에서 setter가 없어 크래시날 수 있음
+        self._stf_reauth_entry_id = self.context.get("entry_id")
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -131,7 +136,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if not devices:
                         errors["base"] = "no_devices"
                     else:
-                        entry_id = getattr(self, "_reauth_entry_id", None)
+                        entry_id = self._stf_reauth_entry_id
                         if entry_id:
                             entry = self.hass.config_entries.async_get_entry(entry_id)
                             if entry:
@@ -172,11 +177,14 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
 
             update_interval = user_input.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
             keepalive_interval = user_input.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT)
+
             smarttags_mode = user_input.get(_OPT_MODE_SMARTTAGS, _bool_to_mode(CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT))
             others_mode = user_input.get(_OPT_MODE_OTHERS, _bool_to_mode(CONF_ACTIVE_MODE_OTHERS_DEFAULT))
 
             new_options[CONF_UPDATE_INTERVAL] = int(update_interval)
             new_options[CONF_KEEPALIVE_INTERVAL] = int(keepalive_interval)
+
+            # ✅ 내부 저장 구조(BOOL) 유지
             new_options[CONF_ACTIVE_MODE_SMARTTAGS] = _mode_to_bool(str(smarttags_mode))
             new_options[CONF_ACTIVE_MODE_OTHERS] = _mode_to_bool(str(others_mode))
 
@@ -193,11 +201,6 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
                     CONF_UPDATE_INTERVAL,
                     default=self._config_entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
                 ): vol.All(vol.Coerce(int), vol.Clamp(min=15, max=86400)),
-                # ✅ NEW
-                vol.Required(
-                    CONF_KEEPALIVE_INTERVAL,
-                    default=self._config_entry.options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT),
-                ): vol.All(vol.Coerce(int), vol.Clamp(min=60, max=86400)),
                 vol.Required(
                     CONF_KEEPALIVE_INTERVAL,
                     default=self._config_entry.options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT),
