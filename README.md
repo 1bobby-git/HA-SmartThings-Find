@@ -9,11 +9,19 @@ Samsung **SmartThings Find** 비공식(역공학) 연동을 Home Assistant에서
 
 ## Features
 
-기기마다 아래 엔티티가 생성됩니다.
+기기마다 아래 엔티티가 생성됩니다. (기기 타입/계정 상태에 따라 일부는 미지원일 수 있습니다)
 
 - **Device Tracker**: 기기 위치(GPS)
-- **Sensor**: 배터리(가능한 기기만)
-- **Button**: Ring(벨 울리기) 요청
+- **Sensor**
+  - 배터리(가능한 기기만 / 특히 이어버드는 안 나오는 경우가 많습니다)
+  - Last update(서버가 보고한 gps_date 기반)
+- **Button**
+  - Ring(벨 울리기) 요청
+  - Stop Ring(벨 중지) *(기기/타입에 따라 미지원일 수 있음)*
+  - Update Location(위치 업데이트 요청) *(Active 모드가 켜져 있을 때 효과가 큼)*
+
+> ℹ️ 참고: 이 통합은 **SmartTag 물리 버튼(실물 클릭)** 이벤트를 받을 수 없습니다.  
+> SmartThings Find **웹사이트가 제공하는 기능 범위**에서만 동작합니다.
 
 ---
 
@@ -52,6 +60,27 @@ Samsung **SmartThings Find** 비공식(역공학) 연동을 Home Assistant에서
 > ✅ 팁: `JSESSIONID`만 넣으면 실패할 수 있습니다.  
 > 가능하면 `chkLogin.do` 요청의 **Cookie 헤더 전체**를 넣어주세요.
 
+### 쿠키/세션 만료 & 재인증(reauth)
+
+SmartThings Find 웹 세션은 **시간이 지나면 만료**될 수 있습니다.  
+만료되면 엔티티가 **[사용 불가]/Unavailable**로 바뀌거나, 로그에 `chkLogin.do ... body='fail'` 같은 인증 실패가 나타날 수 있습니다.
+
+- 세션이 만료되면 Home Assistant가 통합을 **재인증 필요** 상태로 전환할 수 있습니다.
+- 이 경우 통합 화면에서 **재구성/재인증**을 통해 새 쿠키를 다시 넣어주세요.
+
+> 🔐 보안: 쿠키는 계정 인증 정보입니다. 로그/이슈에 그대로 올리지 마세요.
+
+---
+
+## KeepAlive (세션 유지)
+
+일부 환경에서는 **몇 시간 후 세션이 만료되어** 기기가 Unavailable이 되는 경우가 있습니다.  
+이를 완화하기 위해, 통합은 **KeepAlive**를 통해 주기적으로 SmartThings Find 웹 엔드포인트를 호출해 세션을 유지하려고 시도합니다.
+
+- KeepAlive는 완전한 보장을 하지는 않습니다(삼성 정책/변경에 따라 달라질 수 있음).
+- 그래도 일반적으로 “idle 로그아웃” 유형에는 도움이 됩니다.
+- KeepAlive 동작 중 **쿠키가 회전(Set-Cookie)** 될 수 있어, 가능하면 최신 쿠키를 entry에 저장해 유지합니다.
+
 ---
 
 ## Active / Passive mode
@@ -78,6 +107,9 @@ Samsung **SmartThings Find** 비공식(역공학) 연동을 Home Assistant에서
 Home Assistant → 통합 → SmartThings Find → **구성(Configure)**
 
 - `update_interval` : 업데이트 간격(초)
+- `keepalive_interval` : 세션 유지(KeepAlive) 간격(초)  
+  - 추천 시작값: **300초(5분)**  
+  - 여전히 만료되면: 120초(2분)로 낮춰 테스트
 - `active_mode_smarttags` : SmartTag Active mode
 - `active_mode_others` : 기타 기기(폰/워치/이어버드 등) Active mode
 
@@ -87,7 +119,24 @@ Home Assistant → 통합 → SmartThings Find → **구성(Configure)**
 
 - “Ring”은 주변의 갤럭시 기기(폰/태블릿)가 BLE로 태그에 전달하는 구조라, 주변에 연결 기기가 없으면 실패할 수 있습니다.
 - 기기 종류에 따라 위치/배터리 정보가 항상 오지 않을 수 있습니다.
+- SmartThings **모바일 앱**과 **웹사이트** 동작이 100% 동일하지 않을 수 있습니다. 가능하면 웹사이트에서 먼저 테스트하세요.
 - 비공식 통합이라 삼성 측 변경에 취약합니다.
+
+---
+
+## Troubleshooting
+
+### 1) 몇 시간 후 Unavailable로 바뀜
+- 쿠키 만료 가능성이 큽니다 → 새 쿠키로 재인증(reauth)
+- KeepAlive 간격을 줄여보세요(예: 300 → 120)
+- SmartThings Find 웹사이트에서 같은 계정/기기로 정상 조회되는지 확인
+
+### 2) 배터리가 Unknown/없음
+- 일부 기기는 웹에서 배터리를 제공하지 않습니다(특히 이어버드)
+
+### 3) Ring이 안 울림
+- 주변에 중계할 Galaxy 기기가 없으면 실패할 수 있습니다
+- 웹사이트에서 Ring이 되는지 먼저 확인
 
 ---
 
@@ -101,3 +150,9 @@ logger:
   logs:
     custom_components.smartthings_find: debug
 ```
+
+---
+
+## Credits / Upstream
+
+- Original upstream: `Vedeneb/HA-SmartThings-Find` (archived / read-only)
