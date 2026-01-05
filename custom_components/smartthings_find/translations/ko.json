@@ -5,14 +5,14 @@
         "title": "SmartThings Find",
         "description": "1) https://smartthingsfind.samsung.com 로그인\n2) DevTools(F12) → Network\n3) chkLogin.do 선택(필요시 새로고침)\n4) Request Headers → Cookie: 전체 줄 복사\n5) 아래에 붙여넣기",
         "data": {
-          "cookie_input": "Cookie header"
+          "cookie": "Cookie header"
         }
       },
       "reauth_confirm": {
         "title": "재인증 필요",
         "description": "세션이 만료되었습니다. 새 Cookie header를 붙여넣어 갱신하세요.",
         "data": {
-          "cookie_input": "Cookie header"
+          "cookie": "Cookie header"
         }
       }
     },
@@ -28,10 +28,12 @@
     "step": {
       "init": {
         "title": "옵션",
+        "description": "Active / Passive 안내\n\n- 패시브(Passive): 서버에 마지막으로 보고된 위치만 조회 (배터리 영향 적음)\n- 액티브(Active): 위치 업데이트 요청 전송 후 조회 (정확도/즉시성↑ 배터리 영향↑)\n\nSmartTag와 기타 기기(폰/워치/이어버드 등)는 동작/배터리 영향이 달라 별도로 설정합니다.",
         "data": {
           "update_interval": "업데이트 간격(초)",
-          "active_mode_smarttags": "SmartTag Active 모드",
-          "active_mode_others": "기타 기기 Active 모드"
+          "keepalive_interval": "KeepAlive interval(초)",
+          "mode_smarttags": "SmartTag",
+          "mode_others": "기타 기기(폰/워치/이어버드 등)"
         }
       }
     }

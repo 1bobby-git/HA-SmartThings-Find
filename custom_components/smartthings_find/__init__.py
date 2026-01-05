@@ -74,7 +74,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception:  # noqa: BLE001
         update_interval_s = int(CONF_UPDATE_INTERVAL_DEFAULT)
 
-    # ✅ NEW: keepalive interval
+    # ✅ keepalive interval (옵션 반영)
     keepalive_interval_s = entry.options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT)
     try:
         keepalive_interval_s = int(keepalive_interval_s)
@@ -115,6 +115,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             session=session,
             devices=devices,
             update_interval_s=update_interval_s,
+            keepalive_interval_s=keepalive_interval_s,
         )
 
         await coordinator.async_config_entry_first_refresh()

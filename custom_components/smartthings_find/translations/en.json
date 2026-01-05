@@ -5,14 +5,14 @@
         "title": "SmartThings Find",
         "description": "1) Login at https://smartthingsfind.samsung.com\n2) DevTools(F12) → Network\n3) Open chkLogin.do (refresh if needed)\n4) Copy Request Headers → Cookie: line\n5) Paste below",
         "data": {
-          "cookie_input": "Cookie header"
+          "cookie": "Cookie header"
         }
       },
       "reauth_confirm": {
         "title": "Re-authentication required",
         "description": "Session expired. Paste a new Cookie header to re-authenticate.",
         "data": {
-          "cookie_input": "Cookie header"
+          "cookie": "Cookie header"
         }
       }
     },
@@ -28,10 +28,12 @@
     "step": {
       "init": {
         "title": "Options",
+        "description": "Active / Passive info\n\n- Passive: Reads only the last location reported to the server (lower battery impact)\n- Active: Sends a location update request before reading (fresher location, higher battery impact)\n\nSmartTags and other devices are configured separately due to different behavior and battery impact.",
         "data": {
           "update_interval": "Update interval (seconds)",
-          "active_mode_smarttags": "Active mode for SmartTags",
-          "active_mode_others": "Active mode for other devices"
+          "keepalive_interval": "KeepAlive interval (seconds)",
+          "mode_smarttags": "SmartTag",
+          "mode_others": "Other devices (phone/watch/earbuds)"
         }
       }
     }

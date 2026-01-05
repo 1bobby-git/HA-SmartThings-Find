@@ -54,14 +54,8 @@ def _mode_selector() -> selector.SelectSelector:
         selector.SelectSelectorConfig(
             mode=selector.SelectSelectorMode.DROPDOWN,
             options=[
-                selector.SelectOptionDict(
-                    value=_MODE_PASSIVE,
-                    label="패시브 (서버에 마지막으로 보고된 위치만 조회, 배터리 영향 적음)",
-                ),
-                selector.SelectOptionDict(
-                    value=_MODE_ACTIVE,
-                    label="액티브 (위치 업데이트 요청 전송, 정확도/즉시성↑ 배터리 영향↑)",
-                ),
+                selector.SelectOptionDict(value=_MODE_PASSIVE, label="패시브"),
+                selector.SelectOptionDict(value=_MODE_ACTIVE, label="액티브"),
             ],
         ),
     )
@@ -200,6 +194,10 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
                     default=self._config_entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
                 ): vol.All(vol.Coerce(int), vol.Clamp(min=15, max=86400)),
                 # ✅ NEW
+                vol.Required(
+                    CONF_KEEPALIVE_INTERVAL,
+                    default=self._config_entry.options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT),
+                ): vol.All(vol.Coerce(int), vol.Clamp(min=60, max=86400)),
                 vol.Required(
                     CONF_KEEPALIVE_INTERVAL,
                     default=self._config_entry.options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT),

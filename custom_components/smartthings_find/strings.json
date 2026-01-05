@@ -30,10 +30,12 @@
     "step": {
       "init": {
         "title": "Options",
+        "description": "Active/Passive 안내\n\n- Passive(패시브): 서버에 마지막으로 보고된 위치만 조회(배터리 영향 적음)\n- Active(액티브): 위치 업데이트 요청 전송 후 조회(정확도/즉시성↑ 배터리 영향↑)\n\nSmartTag와 기타 기기(폰/워치/이어버드 등)는 동작/배터리 영향이 달라 별도로 설정합니다.",
         "data": {
           "update_interval": "Update interval (seconds)",
-          "mode_smarttags": "Active mode for SmartTags",
-          "mode_others": "Active mode for other devices"
+          "keepalive_interval": "keepalive_interval",
+          "mode_smarttags": "SmartTag",
+          "mode_others": "Other devices (phone/watch/earbuds)"
         }
       }
     }

@@ -83,35 +83,45 @@ SmartThings Find 웹 세션은 **시간이 지나면 만료**될 수 있습니�
 
 ---
 
-## Active / Passive mode
+## Active / Passive mode (중요)
 
-이 통합에는 위치 갱신 방식이 두 가지가 있습니다.
+옵션 화면에서 SmartTag와 기타 기기(폰/워치/이어버드 등)에 대해 **Passive / Active** 동작을 선택할 수 있습니다.
 
-- **Passive mode**: 서버에 “마지막으로 보고된 위치”를 읽기만 함 (배터리 영향 적음)
-- **Active mode**: 위치 업데이트 요청을 보내 최신 위치를 유도 (정확도/즉시성 ↑, 배터리 영향 ↑)
+### 안내(정보 영역)
 
-### 모드는 어떻게 설정하나요?
-옵션에서 기기 유형별로 **Active / Passive를 선택**합니다.
+- **Passive(패시브)**  
+  서버에 **마지막으로 보고된 위치**만 조회합니다. (배터리 영향이 적음)
 
-- 옵션이 **켜져 있으면(ON) = Active mode**
-- 옵션이 **꺼져 있으면(OFF) = Passive mode**
+- **Active(액티브)**  
+  조회 전에 **위치 업데이트 요청**을 보내 최신 위치를 유도합니다. (정확도/즉시성 ↑, 배터리 영향 ↑)
 
-기기 타입별로 나누는 이유:
-- **SmartTag**는 Active로 얻는 이점이 큰 편이고,
-- **기타 기기(폰/워치/이어버드 등)** 는 Active 요청이 배터리/상태에 영향을 줄 수 있어 분리해 둡니다.
+> 참고: 기타 기기(폰/워치 등)는 Active 요청이 배터리/상태에 영향을 줄 수 있어, **SmartTag와 분리**해 둡니다.
 
 ---
 
-## Options
+## Options (옵션 화면 설명)
 
-Home Assistant → 통합 → SmartThings Find → **구성(Configure)**
+Home Assistant → 통합 → SmartThings Find → **옵션(Configure)**
 
-- `update_interval` : 업데이트 간격(초)
-- `keepalive_interval` : 세션 유지(KeepAlive) 간격(초)  
-  - 추천 시작값: **300초(5분)**  
-  - 여전히 만료되면: 120초(2분)로 낮춰 테스트
-- `active_mode_smarttags` : SmartTag Active mode
-- `active_mode_others` : 기타 기기(폰/워치/이어버드 등) Active mode
+옵션 화면에는 아래 항목이 표시됩니다(스크린샷 예시처럼 입력창 2개 + 드롭다운 2개):
+
+1) **업데이트 간격(초)**  
+- 키: `update_interval`  
+- 위치/배터리 정보를 갱신하는 기본 폴링 주기입니다.
+
+2) **KeepAlive interval(초)**  
+- 키: `keepalive_interval`  
+- 세션 유지(KeepAlive) 호출 주기입니다.  
+- 추천 시작값: **300초(5분)**  
+- 여전히 만료되면: 120초(2분)로 낮춰 테스트
+
+3) **SmartTag** (드롭다운: Passive / Active)  
+- 저장 값: `passive` 또는 `active`  
+- SmartTag에만 적용되는 모드입니다.
+
+4) **기타 기기(폰/워치/이어버드 등)** (드롭다운: Passive / Active)  
+- 저장 값: `passive` 또는 `active`  
+- SmartTag가 아닌 기기(휴대폰, 워치, 이어버드 등)에 적용되는 모드입니다.
 
 ---
 
