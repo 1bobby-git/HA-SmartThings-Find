@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import logging
-from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
     DOMAIN,
@@ -24,7 +23,6 @@ from .const import (
     DATA_SESSION,
     DATA_COORDINATOR,
     DATA_DEVICES,
-    DATA_KEEPALIVE_UNSUB,
 )
 from .coordinator import SmartThingsFindCoordinator
 from .utils import (
@@ -33,8 +31,7 @@ from .utils import (
     make_session,
     fetch_csrf,
     get_devices,
-    persist_cookie_to_entry,
-    keepalive_ping,  # ✅ 추가
+    persist_cookie_to_entry,  # ✅ 추가(최소 변경)
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,6 +42,15 @@ PLATFORMS = [Platform.DEVICE_TRACKER, Platform.SENSOR, Platform.BUTTON]
 async def async_setup(hass: HomeAssistant, _config) -> bool:
     hass.data.setdefault(DOMAIN, {})
     return True
+
+
+def _coordinator_supports_keepalive_kw() -> bool:
+    """Backward/forward compatible: only pass keepalive_interval_s if supported."""
+    try:
+        sig = inspect.signature(SmartThingsFindCoordinator.__init__)
+        return "keepalive_interval_s" in sig.parameters
+    except Exception:  # noqa: BLE001
+        return False
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -74,13 +80,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception:  # noqa: BLE001
         update_interval_s = int(CONF_UPDATE_INTERVAL_DEFAULT)
 
-    # ✅ keepalive interval (옵션 반영)
+    # keepalive 옵션(있으면 반영) - 단, coordinator가 지원할 때만 전달
     keepalive_interval_s = entry.options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT)
     try:
         keepalive_interval_s = int(keepalive_interval_s)
     except Exception:  # noqa: BLE001
         keepalive_interval_s = int(CONF_KEEPALIVE_INTERVAL_DEFAULT)
-    keepalive_interval_s = max(60, keepalive_interval_s)
 
     hass.data[DOMAIN][entry.entry_id].update(
         {
@@ -109,14 +114,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("cookie persist after get_devices failed: %s", err)
 
-        coordinator = SmartThingsFindCoordinator(
+        coord_kwargs = dict(
             hass=hass,
             entry=entry,
             session=session,
             devices=devices,
             update_interval_s=update_interval_s,
-            keepalive_interval_s=keepalive_interval_s,
         )
+        if _coordinator_supports_keepalive_kw():
+            coord_kwargs["keepalive_interval_s"] = keepalive_interval_s
+
+        coordinator = SmartThingsFindCoordinator(**coord_kwargs)
 
         await coordinator.async_config_entry_first_refresh()
 
@@ -127,25 +135,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 DATA_DEVICES: devices,
             }
         )
-
-        # ✅ NEW: KeepAlive timer (세션/쿠키 유지)
-        async def _keepalive(_now) -> None:
-            try:
-                await keepalive_ping(hass, session, entry.entry_id)
-                # keepalive 중에도 쿠키 회전될 수 있으니 저장
-                try:
-                    await persist_cookie_to_entry(hass, entry, session)
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.debug("cookie persist after keepalive failed: %s", err)
-            except ConfigEntryAuthFailed:
-                # ✅ coordinator 밖에서 발생하는 auth fail은 entry.async_start_reauth(hass)로 유도 :contentReference[oaicite:3]{index=3}
-                _LOGGER.debug("Keepalive detected expired session; starting reauth")
-                entry.async_start_reauth(hass)
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("Keepalive failed (non-fatal): %s", err)
-
-        unsub = async_track_time_interval(hass, _keepalive, timedelta(seconds=keepalive_interval_s))
-        hass.data[DOMAIN][entry.entry_id][DATA_KEEPALIVE_UNSUB] = unsub
 
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         return True
@@ -163,14 +152,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     if data:
-        # ✅ keepalive 해제
-        unsub = data.get(DATA_KEEPALIVE_UNSUB)
-        if unsub:
-            try:
-                unsub()
-            except Exception:  # noqa: BLE001
-                pass
-
         coordinator = data.get(DATA_COORDINATOR)
         if coordinator:
             await coordinator.async_shutdown()

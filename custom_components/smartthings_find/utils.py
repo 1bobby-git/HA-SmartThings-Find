@@ -15,7 +15,6 @@ from yarl import URL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import device_registry
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.entity import DeviceInfo
 
 from .const import (
@@ -94,12 +93,25 @@ def apply_cookies_to_session(session: aiohttp.ClientSession, cookies: dict[str, 
 
 
 def make_session(hass: HomeAssistant) -> aiohttp.ClientSession:
-    """Dedicated session (avoid polluting HA shared session)."""
+    """Dedicated session (not Home Assistant managed session)."""
+    _ = hass  # keep signature for compatibility (unused)
+
     jar = aiohttp.CookieJar(unsafe=True)
-    return async_create_clientsession(
-        hass,
+
+    # 너무 공격적이지 않게 기본 타임아웃만 설정
+    timeout = aiohttp.ClientTimeout(total=30)
+
+    # STF가 UA에 민감할 가능성 대비(필수는 아니지만 안전)
+    headers = {
+        "User-Agent": "HomeAssistant-SmartThingsFind/1.1.11",
+        "Accept": "*/*",
+    }
+
+    return aiohttp.ClientSession(
         cookie_jar=jar,
+        timeout=timeout,
         raise_for_status=False,
+        headers=headers,
     )
 
 
@@ -180,14 +192,9 @@ async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, en
     """
     hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})
 
-    # ✅ 항상 csrf 확인/갱신 (여기서 fail이면 ConfigEntryAuthFailed)
     csrf = hass.data[DOMAIN][entry_id].get("_csrf")
     if not csrf:
         csrf = await fetch_csrf(hass, session, entry_id)
-    else:
-        # csrf가 있어도 세션이 죽었을 수 있으니 chkLogin을 한 번 더 가볍게 확인
-        # (너무 공격적이지 않게: 실패하면 여기서 바로 예외로 reauth 유도)
-        await fetch_csrf(hass, session, entry_id)
 
     url = URL_DEVICE_LIST.update_query({"_csrf": csrf})
     async with session.post(url, headers={"Accept": "application/json"}, data={}) as resp:
