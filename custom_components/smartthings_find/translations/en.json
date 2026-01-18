@@ -3,14 +3,7 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "1) Login at https://smartthingsfind.samsung.com\n2) DevTools(F12) → Network\n3) Open chkLogin.do (refresh if needed)\n4) Copy Request Headers → Cookie: line\n5) Paste below",
-        "data": {
-          "cookie": "Cookie header"
-        }
-      },
-      "reauth_confirm": {
-        "title": "Re-authentication required",
-        "description": "Session expired. Paste a new Cookie header to re-authenticate.",
+        "description": "Enter Cookie header. (Paste new Cookie when session expires)\n\n1) Login at https://smartthingsfind.samsung.com\n2) DevTools(F12) → Network\n3) Open chkLogin.do (refresh if needed)\n4) Copy Request Headers → Cookie: line\n5) Paste below",
         "data": {
           "cookie": "Cookie header"
         }

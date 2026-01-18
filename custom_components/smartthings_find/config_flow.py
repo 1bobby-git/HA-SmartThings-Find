@@ -69,7 +69,9 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     _stf_reauth_entry_id: str | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """처음 설정과 재인증을 통합한 단일 설정 화면."""
         errors: dict[str, str] = {}
+        is_reauth = self._stf_reauth_entry_id is not None
 
         if user_input is not None:
             cookie_line = (user_input.get(CONF_COOKIE) or "").strip()
@@ -89,10 +91,27 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if not devices:
                         errors["base"] = "no_devices"
                     else:
-                        return self.async_create_entry(
-                            title="SmartThings Find",
-                            data={CONF_COOKIE: cookie_line},
-                        )
+                        if is_reauth:
+                            # 재인증: 기존 entry 업데이트
+                            entry = self.hass.config_entries.async_get_entry(
+                                self._stf_reauth_entry_id
+                            )
+                            if entry:
+                                new_data = dict(entry.data)
+                                new_data[CONF_COOKIE] = cookie_line
+                                self.hass.config_entries.async_update_entry(
+                                    entry, data=new_data
+                                )
+                                await self.hass.config_entries.async_reload(
+                                    entry.entry_id
+                                )
+                            return self.async_abort(reason="reauth_successful")
+                        else:
+                            # 처음 설정: 새 entry 생성
+                            return self.async_create_entry(
+                                title="SmartThings Find",
+                                data={CONF_COOKIE: cookie_line},
+                            )
 
                 except ConfigEntryAuthFailed:
                     errors["base"] = "invalid_auth"
@@ -109,57 +128,11 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
     async def async_step_reauth(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """
-        Home Assistant가 ConfigEntryAuthFailed를 받으면 reauth flow를 시작한다.
-        """
+        """Home Assistant가 ConfigEntryAuthFailed를 받으면 reauth flow를 시작한다."""
         # ✅ 기존 self._reauth_entry_id = ... 는 HA 코어에서 setter가 없어 크래시날 수 있음
         self._stf_reauth_entry_id = self.context.get("entry_id")
-        return await self.async_step_reauth_confirm()
-
-    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
-            cookie_line = (user_input.get(CONF_COOKIE) or "").strip()
-            cookies = parse_cookie_header(cookie_line)
-
-            if not cookie_line or not cookies:
-                errors["base"] = "invalid_auth"
-            else:
-                session = make_session(self.hass)
-                apply_cookies_to_session(session, cookies)
-
-                try:
-                    await fetch_csrf(self.hass, session, "config_flow")
-                    devices = await get_devices(self.hass, session, "config_flow")
-
-                    if not devices:
-                        errors["base"] = "no_devices"
-                    else:
-                        entry_id = self._stf_reauth_entry_id
-                        if entry_id:
-                            entry = self.hass.config_entries.async_get_entry(entry_id)
-                            if entry:
-                                new_data = dict(entry.data)
-                                new_data[CONF_COOKIE] = cookie_line
-                                self.hass.config_entries.async_update_entry(entry, data=new_data)
-                                await self.hass.config_entries.async_reload(entry.entry_id)
-
-                        return self.async_abort(reason="reauth_successful")
-
-                except ConfigEntryAuthFailed:
-                    errors["base"] = "invalid_auth"
-                except Exception as err:  # noqa: BLE001
-                    _LOGGER.exception("Reauth failed: %s", err)
-                    errors["base"] = "cannot_connect"
-                finally:
-                    try:
-                        await session.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-
-        schema = vol.Schema({vol.Required(CONF_COOKIE): str})
-        return self.async_show_form(step_id="reauth_confirm", data_schema=schema, errors=errors)
+        # 통합된 user step으로 리다이렉트
+        return await self.async_step_user()
 
     @staticmethod
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:

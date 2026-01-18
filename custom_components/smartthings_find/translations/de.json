@@ -1,18 +1,22 @@
 {
   "config": {
     "step": {
-      "cookie": {
-        "title": "SmartThings Find Login (Manuell)",
-        "description": "Melde dich im Browser bei smartthingsfind.samsung.com an, öffne dann DevTools → Network → chkLogin.do und kopiere **Request Headers → Cookie:** hier hinein."
+      "user": {
+        "title": "SmartThings Find",
+        "description": "Cookie-Header eingeben. (Bei Sitzungsablauf neuen Cookie einfügen)\n\n1) Bei https://smartthingsfind.samsung.com anmelden\n2) DevTools(F12) → Network\n3) chkLogin.do auswählen (bei Bedarf aktualisieren)\n4) Request Headers → Cookie: kopieren\n5) Unten einfügen",
+        "data": {
+          "cookie": "Cookie header"
+        }
       }
     },
     "error": {
-      "invalid_cookie": "Cookie-Eingabe kann nicht gelesen werden.",
-      "missing_jsessionid": "JSESSIONID nicht gefunden. Bitte den gesamten Cookie-Header aus chkLogin.do einfügen.",
-      "auth_failed": "Cookie ist ungültig. Bitte den gesamten Cookie-Header aus chkLogin.do einfügen."
+      "invalid_auth": "Authentifizierung fehlgeschlagen. Bitte den Cookie-Header überprüfen.",
+      "no_devices": "Keine Geräte im Konto gefunden.",
+      "cannot_connect": "Verbindung fehlgeschlagen. Bitte später erneut versuchen.",
+      "unknown": "Unerwarteter Fehler."
     },
     "abort": {
-      "reauth_successful": "Reauthentifizierung erfolgreich."
+      "reauth_successful": "Reauthentifizierung erfolgreich"
     }
   },
   "options": {

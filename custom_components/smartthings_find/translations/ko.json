@@ -3,14 +3,7 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "1) https://smartthingsfind.samsung.com 로그인\n2) DevTools(F12) → Network\n3) chkLogin.do 선택(필요시 새로고침)\n4) Request Headers → Cookie: 전체 줄 복사\n5) 아래에 붙여넣기",
-        "data": {
-          "cookie": "Cookie header"
-        }
-      },
-      "reauth_confirm": {
-        "title": "재인증 필요",
-        "description": "세션이 만료되었습니다. 새 Cookie header를 붙여넣어 갱신하세요.",
+        "description": "Cookie header를 입력하세요. (세션 만료 시 새 Cookie로 갱신)\n\n1) https://smartthingsfind.samsung.com 로그인\n2) DevTools(F12) → Network\n3) chkLogin.do 선택 (필요시 새로고침)\n4) Request Headers → Cookie: 전체 줄 복사\n5) 아래에 붙여넣기",
         "data": {
           "cookie": "Cookie header"
         }
