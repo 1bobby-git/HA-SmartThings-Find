@@ -3,9 +3,13 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "Cookie header를 입력하세요. (세션 만료 시 새 Cookie로 갱신)\n\n1) https://smartthingsfind.samsung.com 로그인\n2) DevTools(F12) → Network\n3) chkLogin.do 선택 (필요시 새로고침)\n4) Request Headers → Cookie: 전체 줄 복사\n5) 아래에 붙여넣기\n\n⚠️ 중요: 쿠키를 복사한 뒤에는 SmartThings Find 웹사이트(탭/창)를 종료하세요.\n탭이 열린 상태로 유휴(idle)되면 세션이 만료될 수 있습니다.\n권장: 시크릿/프라이빗 창에서 쿠키를 추출하고, 복사 후 즉시 해당 창을 닫기.",
+        "description": "**쿠키 추출 방법**\n1) https://smartthingsfind.samsung.com 로그인\n2) DevTools(F12) → Network\n3) chkLogin.do 선택 (필요시 새로고침)\n4) Request Headers → Cookie: 전체 줄 복사\n\n⚠️ 쿠키 복사 후 SmartThings Find 탭을 닫으세요. (세션 만료 방지)\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
         "data": {
-          "cookie": "Cookie header"
+          "cookie": "Cookie header",
+          "update_interval": "업데이트 간격 (초)",
+          "keepalive_interval": "세션 유지 간격 (초)",
+          "mode_smarttags": "SmartTag 모드",
+          "mode_others": "기타 기기 모드 (폰/워치/이어버드)"
         }
       }
     },
@@ -22,15 +26,21 @@
   "options": {
     "step": {
       "init": {
-        "title": "Options",
-        "description": "Active/Passive 안내\n\n- Passive(패시브): 서버에 마지막으로 보고된 위치만 조회(배터리 영향 적음)\n- Active(액티브): 위치 업데이트 요청 전송 후 조회(정확도/즉시성↑ 배터리 영향↑)\n\nSmartTag와 기타 기기(폰/워치/이어버드 등)는 동작/배터리 영향이 달라 별도로 설정합니다.",
+        "title": "SmartThings Find 설정",
+        "description": "쿠키를 변경하려면 새 Cookie header를 입력하세요. (비워두면 기존 쿠키 유지)\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)\n\nSmartTag와 기타 기기는 배터리 영향이 다르므로 별도 설정됩니다.",
         "data": {
-          "update_interval": "Update interval (seconds)",
-          "keepalive_interval": "keepalive_interval",
-          "mode_smarttags": "SmartTag",
-          "mode_others": "Other devices (phone/watch/earbuds)"
+          "cookie": "새 Cookie header (선택사항)",
+          "update_interval": "업데이트 간격 (초)",
+          "keepalive_interval": "세션 유지 간격 (초)",
+          "mode_smarttags": "SmartTag 모드",
+          "mode_others": "기타 기기 모드 (폰/워치/이어버드)"
         }
       }
+    },
+    "error": {
+      "invalid_auth": "인증 실패. Cookie header가 만료되었거나 잘못되었습니다.",
+      "no_devices": "계정에서 기기를 찾지 못했습니다.",
+      "cannot_connect": "연결 실패. 잠시 후 다시 시도하세요."
     }
   }
 }

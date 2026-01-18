@@ -69,9 +69,16 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     _stf_reauth_entry_id: str | None = None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """처음 설정과 재인증을 통합한 단일 설정 화면."""
+        """처음 설정과 재인증을 통합한 단일 설정 화면 (쿠키 + 옵션)."""
         errors: dict[str, str] = {}
         is_reauth = self._stf_reauth_entry_id is not None
+
+        # 재인증 시 기존 옵션 기본값으로 사용
+        existing_options: dict[str, Any] = {}
+        if is_reauth:
+            entry = self.hass.config_entries.async_get_entry(self._stf_reauth_entry_id)
+            if entry:
+                existing_options = dict(entry.options)
 
         if user_input is not None:
             cookie_line = (user_input.get(CONF_COOKIE) or "").strip()
@@ -91,26 +98,40 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if not devices:
                         errors["base"] = "no_devices"
                     else:
+                        # 옵션 값 추출
+                        update_interval = user_input.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
+                        keepalive_interval = user_input.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT)
+                        smarttags_mode = user_input.get(_OPT_MODE_SMARTTAGS, _bool_to_mode(CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT))
+                        others_mode = user_input.get(_OPT_MODE_OTHERS, _bool_to_mode(CONF_ACTIVE_MODE_OTHERS_DEFAULT))
+
+                        options_data = {
+                            CONF_UPDATE_INTERVAL: int(update_interval),
+                            CONF_KEEPALIVE_INTERVAL: int(keepalive_interval),
+                            CONF_ACTIVE_MODE_SMARTTAGS: _mode_to_bool(str(smarttags_mode)),
+                            CONF_ACTIVE_MODE_OTHERS: _mode_to_bool(str(others_mode)),
+                        }
+
                         if is_reauth:
-                            # 재인증: 기존 entry 업데이트
+                            # 재인증: 기존 entry 업데이트 (data + options 모두)
                             entry = self.hass.config_entries.async_get_entry(
                                 self._stf_reauth_entry_id
                             )
                             if entry:
-                                new_data = dict(entry.data)
-                                new_data[CONF_COOKIE] = cookie_line
                                 self.hass.config_entries.async_update_entry(
-                                    entry, data=new_data
+                                    entry,
+                                    data={CONF_COOKIE: cookie_line},
+                                    options=options_data,
                                 )
                                 await self.hass.config_entries.async_reload(
                                     entry.entry_id
                                 )
                             return self.async_abort(reason="reauth_successful")
                         else:
-                            # 처음 설정: 새 entry 생성
+                            # 처음 설정: 새 entry 생성 (data에 쿠키, options에 설정)
                             return self.async_create_entry(
                                 title="SmartThings Find",
                                 data={CONF_COOKIE: cookie_line},
+                                options=options_data,
                             )
 
                 except ConfigEntryAuthFailed:
@@ -124,7 +145,28 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     except Exception:  # noqa: BLE001
                         pass
 
-        schema = vol.Schema({vol.Required(CONF_COOKIE): str})
+        # 통합 스키마: 쿠키 + 옵션
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_COOKIE): str,
+                vol.Required(
+                    CONF_UPDATE_INTERVAL,
+                    default=existing_options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
+                ): vol.All(vol.Coerce(int), vol.Clamp(min=15, max=86400)),
+                vol.Required(
+                    CONF_KEEPALIVE_INTERVAL,
+                    default=existing_options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT),
+                ): vol.All(vol.Coerce(int), vol.Clamp(min=60, max=86400)),
+                vol.Required(
+                    _OPT_MODE_SMARTTAGS,
+                    default=_bool_to_mode(existing_options.get(CONF_ACTIVE_MODE_SMARTTAGS, CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT)),
+                ): _mode_selector(),
+                vol.Required(
+                    _OPT_MODE_OTHERS,
+                    default=_bool_to_mode(existing_options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT)),
+                ): _mode_selector(),
+            }
+        )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
     async def async_step_reauth(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -145,24 +187,63 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
         self._config_entry = config_entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """통합 옵션 화면: 쿠키 + 모든 설정."""
+        errors: dict[str, str] = {}
+
         if user_input is not None:
-            new_options = dict(self._config_entry.options)
+            # 쿠키 변경 여부 확인
+            new_cookie = (user_input.get(CONF_COOKIE) or "").strip()
+            current_cookie = self._config_entry.data.get(CONF_COOKIE, "")
+            cookie_changed = new_cookie and new_cookie != current_cookie
 
-            update_interval = user_input.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
-            keepalive_interval = user_input.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT)
+            # 쿠키가 변경되었으면 유효성 검증
+            if cookie_changed:
+                cookies = parse_cookie_header(new_cookie)
+                if not cookies:
+                    errors["base"] = "invalid_auth"
+                else:
+                    session = make_session(self.hass)
+                    apply_cookies_to_session(session, cookies)
+                    try:
+                        await fetch_csrf(self.hass, session, "options_flow")
+                        devices = await get_devices(self.hass, session, "options_flow")
+                        if not devices:
+                            errors["base"] = "no_devices"
+                    except ConfigEntryAuthFailed:
+                        errors["base"] = "invalid_auth"
+                    except Exception as err:  # noqa: BLE001
+                        _LOGGER.exception("Options flow cookie validation failed: %s", err)
+                        errors["base"] = "cannot_connect"
+                    finally:
+                        try:
+                            await session.close()
+                        except Exception:  # noqa: BLE001
+                            pass
 
-            smarttags_mode = user_input.get(_OPT_MODE_SMARTTAGS, _bool_to_mode(CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT))
-            others_mode = user_input.get(_OPT_MODE_OTHERS, _bool_to_mode(CONF_ACTIVE_MODE_OTHERS_DEFAULT))
+            if not errors:
+                # 옵션 값 추출
+                update_interval = user_input.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
+                keepalive_interval = user_input.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT)
+                smarttags_mode = user_input.get(_OPT_MODE_SMARTTAGS, _bool_to_mode(CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT))
+                others_mode = user_input.get(_OPT_MODE_OTHERS, _bool_to_mode(CONF_ACTIVE_MODE_OTHERS_DEFAULT))
 
-            new_options[CONF_UPDATE_INTERVAL] = int(update_interval)
-            new_options[CONF_KEEPALIVE_INTERVAL] = int(keepalive_interval)
+                new_options = {
+                    CONF_UPDATE_INTERVAL: int(update_interval),
+                    CONF_KEEPALIVE_INTERVAL: int(keepalive_interval),
+                    CONF_ACTIVE_MODE_SMARTTAGS: _mode_to_bool(str(smarttags_mode)),
+                    CONF_ACTIVE_MODE_OTHERS: _mode_to_bool(str(others_mode)),
+                }
 
-            # ✅ 내부 저장 구조(BOOL) 유지
-            new_options[CONF_ACTIVE_MODE_SMARTTAGS] = _mode_to_bool(str(smarttags_mode))
-            new_options[CONF_ACTIVE_MODE_OTHERS] = _mode_to_bool(str(others_mode))
+                # 쿠키가 변경되었으면 data도 업데이트
+                if cookie_changed:
+                    self.hass.config_entries.async_update_entry(
+                        self._config_entry,
+                        data={CONF_COOKIE: new_cookie},
+                    )
 
-            return self.async_create_entry(title="", data=new_options)
+                return self.async_create_entry(title="", data=new_options)
 
+        # 현재 값을 기본값으로 사용
         active_smarttags = self._config_entry.options.get(
             CONF_ACTIVE_MODE_SMARTTAGS, CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT
         )
@@ -170,6 +251,10 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
 
         schema = vol.Schema(
             {
+                vol.Optional(
+                    CONF_COOKIE,
+                    description={"suggested_value": ""},
+                ): str,
                 vol.Required(
                     CONF_UPDATE_INTERVAL,
                     default=self._config_entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
@@ -189,4 +274,4 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
