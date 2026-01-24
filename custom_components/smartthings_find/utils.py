@@ -27,15 +27,20 @@ from .const import (
     OP_RING,
     OP_CHECK_CONNECTION,
     OP_CHECK_CONNECTION_WITH_LOCATION,
+    STF_BASE_URL,
+    STF_CHK_LOGIN_PATH,
+    STF_DEVICE_LIST_PATH,
+    STF_SET_LAST_DEVICE_PATH,
+    STF_ADD_OPERATION_PATH,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-STF_BASE = URL("https://smartthingsfind.samsung.com/")
-URL_CHK_LOGIN = STF_BASE / "chkLogin.do"
-URL_DEVICE_LIST = STF_BASE / "device/getDeviceList.do"
-URL_SET_LAST_DEVICE = STF_BASE / "device/setLastSelect.do"
-URL_ADD_OPERATION = STF_BASE / "dm/addOperation.do"  # requires ?_csrf=
+STF_BASE = URL(STF_BASE_URL)
+URL_CHK_LOGIN = STF_BASE / STF_CHK_LOGIN_PATH
+URL_DEVICE_LIST = STF_BASE / STF_DEVICE_LIST_PATH
+URL_SET_LAST_DEVICE = STF_BASE / STF_SET_LAST_DEVICE_PATH
+URL_ADD_OPERATION = STF_BASE / STF_ADD_OPERATION_PATH  # requires ?_csrf=
 
 COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 

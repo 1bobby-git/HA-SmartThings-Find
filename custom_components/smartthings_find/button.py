@@ -17,6 +17,11 @@ from .const import (
     DATA_DEVICES,
     OP_RING,
     OP_CHECK_CONNECTION_WITH_LOCATION,
+    STF_BASE_URL,
+    STF_ADD_OPERATION_PATH,
+    REFRESH_DELAY_IMMEDIATE,
+    REFRESH_DELAY_SHORT,
+    LOCATION_POLL_DELAYS,
 )
 from .utils import fetch_csrf
 
@@ -106,7 +111,7 @@ class _STFOperationButton(ButtonEntity):
         if extra:
             payload.update(extra)
 
-        url = f"https://smartthingsfind.samsung.com/dm/addOperation.do?_csrf={csrf_token}"
+        url = f"{STF_BASE_URL}{STF_ADD_OPERATION_PATH}?_csrf={csrf_token}"
 
         try:
             async with session.post(url, json=payload) as response:
@@ -151,8 +156,8 @@ class _STFOperationButton(ButtonEntity):
                 _LOGGER.debug("Delayed refresh (%ss) failed: %s", delay_s, err)
 
         # STF 서버 반영 지연 대비(버튼 응답은 빠르게 종료)
-        self.hass.async_create_task(_delayed_refresh(2))
-        self.hass.async_create_task(_delayed_refresh(6))
+        self.hass.async_create_task(_delayed_refresh(REFRESH_DELAY_IMMEDIATE))
+        self.hass.async_create_task(_delayed_refresh(REFRESH_DELAY_SHORT))
 
 
 class RingStartButton(_STFOperationButton):
@@ -232,8 +237,8 @@ class UpdateLocationButton(_STFOperationButton):
         """Poll a few times until server gps_date changes, then stop.
         If not changed within the window, mark timeout so user can see it.
         """
-        # _kick_refresh()에서 2s/6s는 이미 돌고 있으니, 여기선 좀 더 긴 구간만
-        delays = (15, 30, 45)
+        # _kick_refresh()에서 즉시/단기 refresh는 이미 돌고 있으니, 여기선 좀 더 긴 구간만
+        delays = LOCATION_POLL_DELAYS
 
         for delay_s in delays:
             try:

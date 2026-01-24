@@ -7,6 +7,25 @@ from typing import Final
 DOMAIN: Final = "smartthings_find"
 
 # ----------------------------
+# SmartThings Find URLs
+# ----------------------------
+STF_BASE_URL: Final = "https://smartthingsfind.samsung.com/"
+STF_CHK_LOGIN_PATH: Final = "chkLogin.do"
+STF_DEVICE_LIST_PATH: Final = "device/getDeviceList.do"
+STF_SET_LAST_DEVICE_PATH: Final = "device/setLastSelect.do"
+STF_ADD_OPERATION_PATH: Final = "dm/addOperation.do"
+
+# ----------------------------
+# Timing constants (seconds)
+# ----------------------------
+# Button refresh delays after operation
+REFRESH_DELAY_IMMEDIATE: Final = 2
+REFRESH_DELAY_SHORT: Final = 6
+
+# Location polling delays for server sync
+LOCATION_POLL_DELAYS: Final[tuple[int, ...]] = (15, 30, 45)
+
+# ----------------------------
 # Config / Options keys
 # ----------------------------
 CONF_COOKIE: Final = "cookie"
