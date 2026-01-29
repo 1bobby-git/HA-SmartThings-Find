@@ -204,9 +204,13 @@ async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, en
     url = URL_DEVICE_LIST.update_query({"_csrf": csrf})
     async with session.post(url, headers={"Accept": "application/json"}, data={}) as resp:
         body = (await resp.text()).strip()
+        # ✅ 쿠키 만료 시 200 OK + body "fail"/"Logout" 반환 케이스 체크
+        if body in ("Logout", "fail"):
+            _LOGGER.warning("keepalive_ping session expired (body=%s), triggering reauth", body)
+            raise ConfigEntryAuthFailed(f"Session expired while keepalive ping: body='{body}'")
         if resp.status != 200:
             _LOGGER.debug("keepalive_ping deviceList status=%s body=%s", resp.status, body[:120])
-            if resp.status in (401, 403) or body in ("Logout", "fail"):
+            if resp.status in (401, 403):
                 raise ConfigEntryAuthFailed(f"Session invalid while keepalive ping: {resp.status} '{body}'")
 
 
@@ -312,14 +316,21 @@ async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry
     url = URL_DEVICE_LIST.update_query({"_csrf": csrf})
 
     async with session.post(url, headers={"Accept": "application/json"}, data={}) as resp:
+        body = await resp.text()
+        body_stripped = body.strip()
+
+        # ✅ 쿠키 만료 시 200 OK + body "fail"/"Logout" 반환 케이스 체크
+        if body_stripped in ("Logout", "fail"):
+            _LOGGER.warning("get_devices session expired (body=%s), triggering reauth", body_stripped)
+            raise ConfigEntryAuthFailed(f"Session expired while fetching devices: body='{body_stripped}'")
+
         if resp.status != 200:
-            body = (await resp.text()).strip()
-            _LOGGER.error("Failed to retrieve devices [%s]: %s", resp.status, body[:200])
-            if resp.status in (401, 403) or body in ("Logout", "fail"):
+            _LOGGER.error("Failed to retrieve devices [%s]: %s", resp.status, body_stripped[:200])
+            if resp.status in (401, 403):
                 raise ConfigEntryAuthFailed("Session invalid while fetching devices")
             return []
 
-        data = await resp.json()
+        data = json.loads(body) if body else {}
         devices_data = data.get("deviceList", [])
         devices: list[dict[str, Any]] = []
 
@@ -390,6 +401,10 @@ def get_battery_level(_dev_name: str, ops: list[dict[str, Any]]) -> int | None:
 async def _post_json(session: aiohttp.ClientSession, url: URL, payload: dict[str, Any]) -> tuple[int, str]:
     async with session.post(url, json=payload, headers={"Accept": "application/json"}) as resp:
         text = await resp.text()
+        # ✅ 쿠키 만료 시 200 OK + body "fail"/"Logout" 반환 케이스 체크
+        text_stripped = text.strip()
+        if text_stripped in ("fail", "Logout"):
+            raise ConfigEntryAuthFailed(f"Session expired: body='{text_stripped}'")
         return resp.status, text
 
 
@@ -448,10 +463,16 @@ async def get_device_location(
         ) as resp:
             text = await resp.text()
 
+            # ✅ 쿠키 만료 시 200 OK + body "fail"/"Logout" 반환하는 케이스 처리
+            text_stripped = text.strip()
+            if text_stripped in ("fail", "Logout"):
+                _LOGGER.warning("[%s] Session expired (body=%s), triggering reauth", dev_name, text_stripped)
+                raise ConfigEntryAuthFailed(f"Session expired while fetching location: body='{text_stripped}'")
+
             if resp.status != 200:
                 _LOGGER.error("[%s] Failed to fetch device data (%s): %s", dev_name, resp.status, text[:200])
-                if resp.status in (401, 403) or text.strip() in ("Logout", "fail"):
-                    raise ConfigEntryAuthFailed(f"Session invalid while fetching location: {resp.status} '{text.strip()}'")
+                if resp.status in (401, 403):
+                    raise ConfigEntryAuthFailed(f"Session invalid while fetching location: {resp.status} '{text_stripped}'")
                 return None
 
             data = json.loads(text) if text else {}
