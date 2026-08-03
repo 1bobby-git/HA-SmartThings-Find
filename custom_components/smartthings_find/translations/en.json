@@ -3,32 +3,45 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "Enter Cookie header. (Paste new Cookie when session expires)\n\n1) Login at https://smartthingsfind.samsung.com\n2) DevTools(F12) → Network\n3) Open chkLogin.do (refresh if needed)\n4) Copy Request Headers → Cookie: line\n5) Paste below",
+        "description": "**How to extract the cookie**\n1) Sign in at https://smartthingsfind.samsung.com\n2) DevTools (F12) → Network\n3) Select chkLogin.do (refresh if needed)\n4) Request Headers → Cookie: copy the full line\n\n⚠️ Close the SmartThings Find tab after copying to reduce session conflicts.\n\n**Mode**\n- Passive: read last cached server location (lower battery impact)\n- Active: request a location update first (fresher, higher battery impact)",
         "data": {
-          "cookie": "Cookie header"
+          "cookie": "Cookie header",
+          "update_interval": "Update interval (seconds)",
+          "keepalive_interval": "KeepAlive interval (seconds)",
+          "mode_smarttags": "SmartTag mode",
+          "mode_others": "Other devices mode (phone/watch/earbuds)"
         }
       }
     },
     "error": {
-      "invalid_auth": "Authentication failed. Please verify the Cookie header.",
+      "invalid_auth": "Authentication failed. Cookie header is expired or invalid.",
+      "no_devices": "No devices found for this account.",
+      "cannot_connect": "Connection failed. Try again later.",
       "unknown": "Unexpected error."
     },
     "abort": {
-      "reauth_successful": "Re-authentication successful"
+      "reauth_successful": "Re-authentication successful",
+      "already_configured": "SmartThings Find is already configured."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Options",
-        "description": "Active / Passive info\n\n- Passive: Reads only the last location reported to the server (lower battery impact)\n- Active: Sends a location update request before reading (fresher location, higher battery impact)\n\nSmartTags and other devices are configured separately due to different behavior and battery impact.",
+        "title": "SmartThings Find options",
+        "description": "Paste a new Cookie header to replace the session. Leave empty to keep the current cookie.\n\n**Mode**\n- Passive: read last cached server location\n- Active: request a location update first\n\nSmartTags and other devices are configured separately.",
         "data": {
+          "cookie": "New Cookie header (optional)",
           "update_interval": "Update interval (seconds)",
           "keepalive_interval": "KeepAlive interval (seconds)",
-          "mode_smarttags": "SmartTag",
-          "mode_others": "Other devices (phone/watch/earbuds)"
+          "mode_smarttags": "SmartTag mode",
+          "mode_others": "Other devices mode (phone/watch/earbuds)"
         }
       }
+    },
+    "error": {
+      "invalid_auth": "Authentication failed. Cookie header is expired or invalid.",
+      "no_devices": "No devices found for this account.",
+      "cannot_connect": "Connection failed. Try again later."
     }
   }
 }

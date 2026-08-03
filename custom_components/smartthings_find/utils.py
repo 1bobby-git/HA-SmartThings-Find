@@ -4,18 +4,17 @@ import html
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
+from http.cookies import CookieError, SimpleCookie
 from typing import Any
 
 import aiohttp
-import pytz
-from http.cookies import CookieError, SimpleCookie
 from yarl import URL
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import device_registry
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceInfo
 
 from .const import (
     DOMAIN,
@@ -108,7 +107,7 @@ def make_session(hass: HomeAssistant) -> aiohttp.ClientSession:
 
     # STF가 UA에 민감할 가능성 대비(필수는 아니지만 안전)
     headers = {
-        "User-Agent": "HomeAssistant-SmartThingsFind/1.1.11",
+        "User-Agent": "HomeAssistant-SmartThingsFind/1.2.0",
         "Accept": "*/*",
     }
 
@@ -372,7 +371,7 @@ async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry
 
 
 def parse_stf_date(datestr: str) -> datetime:
-    return datetime.strptime(datestr, "%Y%m%d%H%M%S").replace(tzinfo=pytz.UTC)
+    return datetime.strptime(datestr, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
 
 
 def calc_gps_accuracy(hu: Any, vu: Any) -> float | None:
@@ -485,7 +484,7 @@ async def get_device_location(
                 "used_loc": None,
                 "ops": [],
                 # 폴링 시점 (Last update fallback 용)
-                "fetched_at": datetime.now(tz=pytz.UTC),
+                "fetched_at": datetime.now(tz=timezone.utc),
             }
 
             ops = data.get("operation") or []

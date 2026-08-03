@@ -1,10 +1,7 @@
 {
   "name": "SmartThings Find",
   "content_in_root": false,
-  "domains": [
-    "smartthings_find"
-  ],
-  "homeassistant": "2024.6.0",
+  "homeassistant": "2024.12.0",
   "render_readme": true,
   "zip_release": false
 }

@@ -6,7 +6,7 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.data_entry_flow import FlowResult
+from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import selector
 
@@ -64,11 +64,10 @@ def _mode_selector() -> selector.SelectSelector:
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
-    # ✅ HA Core에서 _reauth_entry_id는 setter 없는 property일 수 있어 충돌함
-    # 통합 전용 변수명으로 보관
+    # HA Core _reauth_entry_id property 충돌 방지용
     _stf_reauth_entry_id: str | None = None
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """처음 설정과 재인증을 통합한 단일 설정 화면 (쿠키 + 옵션)."""
         errors: dict[str, str] = {}
         is_reauth = self._stf_reauth_entry_id is not None
@@ -126,13 +125,14 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                                     entry.entry_id
                                 )
                             return self.async_abort(reason="reauth_successful")
-                        else:
-                            # 처음 설정: 새 entry 생성 (data에 쿠키, options에 설정)
-                            return self.async_create_entry(
-                                title="SmartThings Find",
-                                data={CONF_COOKIE: cookie_line},
-                                options=options_data,
-                            )
+
+                        await self.async_set_unique_id("smartthings_find")
+                        self._abort_if_unique_id_configured()
+                        return self.async_create_entry(
+                            title="SmartThings Find",
+                            data={CONF_COOKIE: cookie_line},
+                            options=options_data,
+                        )
 
                 except ConfigEntryAuthFailed:
                     errors["base"] = "invalid_auth"
@@ -148,7 +148,9 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # 통합 스키마: 쿠키 + 옵션
         schema = vol.Schema(
             {
-                vol.Required(CONF_COOKIE): str,
+                vol.Required(CONF_COOKIE): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=True, type=selector.TextSelectorType.TEXT)
+                ),
                 vol.Required(
                     CONF_UPDATE_INTERVAL,
                     default=existing_options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
@@ -169,32 +171,29 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
-    async def async_step_reauth(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Home Assistant가 ConfigEntryAuthFailed를 받으면 reauth flow를 시작한다."""
-        # ✅ 기존 self._reauth_entry_id = ... 는 HA 코어에서 setter가 없어 크래시날 수 있음
         self._stf_reauth_entry_id = self.context.get("entry_id")
-        # 통합된 user step으로 리다이렉트
         return await self.async_step_user()
 
     @staticmethod
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
-        return SmartThingsFindOptionsFlow(config_entry)
+        return SmartThingsFindOptionsFlow()
 
 
 class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        # ❗ HA 내부에 config_entry property가 있어서 setter로 넣으면 에러남
-        self._config_entry = config_entry
+    """Options flow using HA-provided self.config_entry (HA 2024.12+)."""
 
-    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """통합 옵션 화면: 쿠키 + 모든 설정."""
         errors: dict[str, str] = {}
+        entry = self.config_entry
 
         if user_input is not None:
             # 쿠키 변경 여부 확인
             new_cookie = (user_input.get(CONF_COOKIE) or "").strip()
-            current_cookie = self._config_entry.data.get(CONF_COOKIE, "")
-            cookie_changed = new_cookie and new_cookie != current_cookie
+            current_cookie = entry.data.get(CONF_COOKIE, "")
+            cookie_changed = bool(new_cookie and new_cookie != current_cookie)
 
             # 쿠키가 변경되었으면 유효성 검증
             if cookie_changed:
@@ -237,31 +236,33 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
                 # 쿠키가 변경되었으면 data도 업데이트
                 if cookie_changed:
                     self.hass.config_entries.async_update_entry(
-                        self._config_entry,
+                        entry,
                         data={CONF_COOKIE: new_cookie},
                     )
 
                 return self.async_create_entry(title="", data=new_options)
 
         # 현재 값을 기본값으로 사용
-        active_smarttags = self._config_entry.options.get(
+        active_smarttags = entry.options.get(
             CONF_ACTIVE_MODE_SMARTTAGS, CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT
         )
-        active_others = self._config_entry.options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT)
+        active_others = entry.options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT)
 
         schema = vol.Schema(
             {
                 vol.Optional(
                     CONF_COOKIE,
                     description={"suggested_value": ""},
-                ): str,
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(multiline=True, type=selector.TextSelectorType.TEXT)
+                ),
                 vol.Required(
                     CONF_UPDATE_INTERVAL,
-                    default=self._config_entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
+                    default=entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT),
                 ): vol.All(vol.Coerce(int), vol.Clamp(min=15, max=86400)),
                 vol.Required(
                     CONF_KEEPALIVE_INTERVAL,
-                    default=self._config_entry.options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT),
+                    default=entry.options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT),
                 ): vol.All(vol.Coerce(int), vol.Clamp(min=60, max=86400)),
                 vol.Required(
                     _OPT_MODE_SMARTTAGS,

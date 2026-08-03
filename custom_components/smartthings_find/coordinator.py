@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta, datetime
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Any
-
-import pytz
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .utils import get_device_location, persist_cookie_to_entry
+from .const import CONF_KEEPALIVE_INTERVAL_DEFAULT
+from .utils import get_device_location, keepalive_ping, persist_cookie_to_entry
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,31 +27,69 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         session,
         devices: list[dict[str, Any]],
         update_interval_s: int,
+        keepalive_interval_s: int = CONF_KEEPALIVE_INTERVAL_DEFAULT,
     ) -> None:
         super().__init__(
             hass=hass,
             logger=_LOGGER,
             name="smartthings_find",
+            config_entry=entry,
             update_interval=timedelta(seconds=max(15, int(update_interval_s))),
         )
         self.entry = entry
         self.session = session
         self.devices = devices
+        self._keepalive_interval_s = max(60, int(keepalive_interval_s or CONF_KEEPALIVE_INTERVAL_DEFAULT))
+        self._keepalive_unsub: Callable[[], None] | None = None
 
         # 버튼/센서에서 참조하는 pending 구조 유지
         self._last_update_fetch: dict[str, dict[str, Any]] = {}
         self._last_update_fetch_result: dict[str, str] = {}
 
+    async def async_config_entry_first_refresh(self) -> None:
+        """Run first refresh, then start keepalive."""
+        await super().async_config_entry_first_refresh()
+        self._start_keepalive()
+
+    def _start_keepalive(self) -> None:
+        """Schedule periodic keepalive to reduce idle session expiry."""
+        if self._keepalive_unsub is not None:
+            self._keepalive_unsub()
+            self._keepalive_unsub = None
+
+        self._keepalive_unsub = async_track_time_interval(
+            self.hass,
+            self._async_keepalive,
+            timedelta(seconds=self._keepalive_interval_s),
+        )
+        _LOGGER.debug(
+            "SmartThings Find keepalive scheduled every %ss",
+            self._keepalive_interval_s,
+        )
+
+    async def _async_keepalive(self, _now=None) -> None:
+        """Ping STF endpoints to keep the web session alive."""
+        try:
+            await keepalive_ping(self.hass, self.session, self.entry.entry_id)
+            await persist_cookie_to_entry(self.hass, self.entry, self.session)
+        except ConfigEntryAuthFailed as err:
+            _LOGGER.warning("KeepAlive auth failed; starting reauth: %s", err)
+            self.entry.async_start_reauth(self.hass)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("KeepAlive failed: %s", err)
+
     async def async_shutdown(self) -> None:
-        """Called from __init__.py unload."""
-        # 현재는 별도 타이머 없음(keepalive는 __init__.py에서 관리)
-        return
+        """Stop keepalive and coordinator."""
+        if self._keepalive_unsub is not None:
+            self._keepalive_unsub()
+            self._keepalive_unsub = None
+        await super().async_shutdown()
 
     # -------- pending helpers (버튼/센서 호환) --------
 
     def mark_pending_last_update(self, dvce_id: str, old_gps_date) -> None:
         self._last_update_fetch[dvce_id] = {
-            "started": datetime.now(tz=pytz.UTC),
+            "started": datetime.now(tz=timezone.utc),
             "attempts": 0,
             "old": old_gps_date,
         }
@@ -118,7 +157,7 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 loc = (res or {}).get("used_loc") or {}
                 self._maybe_clear_pending_if_changed(str(dvce_id), loc.get("gps_date"))
 
-            # ✅ 쿠키 회전/갱신을 entry에 지속 저장
+            # 쿠키 회전/갱신을 entry에 지속 저장
             try:
                 await persist_cookie_to_entry(self.hass, self.entry, self.session)
             except Exception as err:  # noqa: BLE001
@@ -127,7 +166,7 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return results
 
         except ConfigEntryAuthFailed:
-            # ✅ 이 예외는 HA가 reauth를 자동 시작할 수 있는 “정석 경로”
+            # 이 예외는 HA가 reauth를 자동 시작할 수 있는 정석 경로
             raise
         except Exception as err:
             raise UpdateFailed(f"Failed to update SmartThings Find data: {err}") from err

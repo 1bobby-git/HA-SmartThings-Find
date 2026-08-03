@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import inspect
 import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
 from .const import (
     DOMAIN,
@@ -31,7 +30,7 @@ from .utils import (
     make_session,
     fetch_csrf,
     get_devices,
-    persist_cookie_to_entry,  # ✅ 추가(최소 변경)
+    persist_cookie_to_entry,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,13 +43,9 @@ async def async_setup(hass: HomeAssistant, _config) -> bool:
     return True
 
 
-def _coordinator_supports_keepalive_kw() -> bool:
-    """Backward/forward compatible: only pass keepalive_interval_s if supported."""
-    try:
-        sig = inspect.signature(SmartThingsFindCoordinator.__init__)
-        return "keepalive_interval_s" in sig.parameters
-    except Exception:  # noqa: BLE001
-        return False
+async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload when options/data change."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -73,14 +68,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     active_others = entry.options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT)
     st_identifier = entry.options.get(CONF_ST_IDENTIFIER)
 
-    # ✅ FIX: 반드시 먼저 정의 (UnboundLocalError 방지)
     update_interval_s = entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
     try:
         update_interval_s = int(update_interval_s)
     except Exception:  # noqa: BLE001
         update_interval_s = int(CONF_UPDATE_INTERVAL_DEFAULT)
 
-    # keepalive 옵션(있으면 반영) - 단, coordinator가 지원할 때만 전달
     keepalive_interval_s = entry.options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT)
     try:
         keepalive_interval_s = int(keepalive_interval_s)
@@ -99,7 +92,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Validate session + store csrf
         await fetch_csrf(hass, session, entry.entry_id)
 
-        # ✅ 추가(최소 변경): fetch_csrf 과정에서 쿠키가 갱신/회전되었을 수 있으므로 즉시 저장
         try:
             await persist_cookie_to_entry(hass, entry, session)
         except Exception as err:  # noqa: BLE001
@@ -108,23 +100,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Load devices
         devices = await get_devices(hass, session, entry.entry_id)
 
-        # ✅ 추가(최소 변경): devices 조회에서도 Set-Cookie가 올 수 있어 한 번 더 저장
         try:
             await persist_cookie_to_entry(hass, entry, session)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("cookie persist after get_devices failed: %s", err)
 
-        coord_kwargs = dict(
+        coordinator = SmartThingsFindCoordinator(
             hass=hass,
             entry=entry,
             session=session,
             devices=devices,
             update_interval_s=update_interval_s,
+            keepalive_interval_s=keepalive_interval_s,
         )
-        if _coordinator_supports_keepalive_kw():
-            coord_kwargs["keepalive_interval_s"] = keepalive_interval_s
-
-        coordinator = SmartThingsFindCoordinator(**coord_kwargs)
 
         await coordinator.async_config_entry_first_refresh()
 
@@ -137,14 +125,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        entry.async_on_unload(entry.add_update_listener(_async_update_listener))
         return True
 
-    except Exception:
+    except ConfigEntryAuthFailed:
         try:
             await session.close()
         except Exception:  # noqa: BLE001
             pass
         raise
+    except Exception as err:
+        try:
+            await session.close()
+        except Exception:  # noqa: BLE001
+            pass
+        raise ConfigEntryNotReady(f"SmartThings Find setup failed: {err}") from err
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
