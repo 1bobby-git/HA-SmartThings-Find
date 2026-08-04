@@ -374,6 +374,14 @@ def parse_stf_date(datestr: str) -> datetime:
     return datetime.strptime(datestr, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
 
 
+def _parse_operation_gps_date(dev_name: str, gps_utc_dt: Any) -> datetime | None:
+    try:
+        return parse_stf_date(gps_utc_dt)
+    except (TypeError, ValueError):
+        _LOGGER.debug("[%s] Ignoring operation with malformed gpsUtcDt", dev_name)
+        return None
+
+
 def calc_gps_accuracy(hu: Any, vu: Any) -> float | None:
     try:
         return round((float(hu) ** 2 + float(vu) ** 2) ** 0.5, 1)
@@ -506,7 +514,9 @@ async def get_device_location(
                         extra = op.get("extra") or {}
                         if "gpsUtcDt" not in extra:
                             continue
-                        utc_date = parse_stf_date(extra["gpsUtcDt"])
+                        utc_date = _parse_operation_gps_date(dev_name, extra["gpsUtcDt"])
+                        if utc_date is None:
+                            continue
 
                         if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
                             continue
@@ -528,7 +538,9 @@ async def get_device_location(
                         if isinstance(loc, dict) and loc.get("encrypted") is True:
                             continue
                         if isinstance(loc, dict) and "gpsUtcDt" in loc:
-                            utc_date = parse_stf_date(loc["gpsUtcDt"])
+                            utc_date = _parse_operation_gps_date(dev_name, loc["gpsUtcDt"])
+                            if utc_date is None:
+                                continue
                             if used_loc["gps_date"] and used_loc["gps_date"] >= utc_date:
                                 continue
                             if "latitude" in loc:
