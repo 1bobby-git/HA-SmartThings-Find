@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from http.cookies import CookieError, SimpleCookie
-from typing import Any
+from typing import Any, TypeVar
 
 import aiohttp
 from yarl import URL
@@ -31,9 +33,13 @@ from .const import (
     STF_DEVICE_LIST_PATH,
     STF_SET_LAST_DEVICE_PATH,
     STF_ADD_OPERATION_PATH,
+    AUTH_FAILURE_GRACE_PERIOD,
+    AUTH_RETRY_DELAYS,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 STF_BASE = URL(STF_BASE_URL)
 URL_CHK_LOGIN = STF_BASE / STF_CHK_LOGIN_PATH
@@ -119,11 +125,12 @@ def make_session(hass: HomeAssistant) -> aiohttp.ClientSession:
     )
 
 
-async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str | None = None) -> str:
-    """
-    Calls chkLogin.do and returns CSRF from header "_csrf".
-    If entry_id is given, also stores it in hass.data[DOMAIN][entry_id]["_csrf"].
-    """
+async def _fetch_csrf_once(
+    hass: HomeAssistant,
+    session: aiohttp.ClientSession,
+    entry_id: str | None = None,
+) -> str:
+    """Call chkLogin.do once without attempting session renewal."""
     hass.data.setdefault(DOMAIN, {})
     if entry_id is not None:
         hass.data[DOMAIN].setdefault(entry_id, {})
@@ -149,6 +156,64 @@ async def fetch_csrf(hass: HomeAssistant, session: aiohttp.ClientSession, entry_
             hass.data[DOMAIN][entry_id]["_csrf"] = csrf
 
         return csrf
+
+
+async def fetch_csrf(
+    hass: HomeAssistant,
+    session: aiohttp.ClientSession,
+    entry_id: str | None = None,
+    *,
+    retry_delays: tuple[int | float, ...] = AUTH_RETRY_DELAYS,
+) -> str:
+    """Fetch CSRF, tolerating short-lived false Logout responses."""
+    return await retry_auth_operation(
+        lambda: _fetch_csrf_once(hass, session, entry_id),
+        retry_delays=retry_delays,
+    )
+
+
+async def retry_auth_operation(
+    operation: Callable[[], Awaitable[_T]],
+    *,
+    retry_delays: tuple[int | float, ...] = AUTH_RETRY_DELAYS,
+) -> _T:
+    """Retry only authentication failures, preserving all other error paths."""
+    for attempt, delay in enumerate((0, *retry_delays)):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            return await operation()
+        except ConfigEntryAuthFailed:
+            if attempt >= len(retry_delays):
+                raise
+            _LOGGER.warning(
+                "SmartThings Find temporarily rejected authentication; retrying in %ss",
+                retry_delays[attempt],
+            )
+    raise RuntimeError("unreachable")
+
+
+def auth_failure_is_persistent(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Return true only after continuous auth failures exceed the grace period."""
+    now = now or datetime.now(tz=timezone.utc)
+    entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})
+    started = entry_data.get("auth_failure_started")
+    if not isinstance(started, datetime):
+        entry_data["auth_failure_started"] = now
+        return False
+    return (now - started).total_seconds() >= AUTH_FAILURE_GRACE_PERIOD
+
+
+def clear_auth_failure(hass: HomeAssistant, entry_id: str) -> None:
+    """Clear the continuous-auth-failure timer after any successful request."""
+    entry_data = hass.data.get(DOMAIN, {}).get(entry_id)
+    if entry_data is not None:
+        entry_data.pop("auth_failure_started", None)
 
 
 async def persist_cookie_to_entry(

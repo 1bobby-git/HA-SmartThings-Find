@@ -17,13 +17,18 @@ from .const import (
     DATA_DEVICES,
     OP_RING,
     OP_CHECK_CONNECTION_WITH_LOCATION,
-    STF_BASE_URL,
-    STF_ADD_OPERATION_PATH,
     REFRESH_DELAY_IMMEDIATE,
     REFRESH_DELAY_SHORT,
     LOCATION_POLL_DELAYS,
 )
-from .utils import fetch_csrf
+from .utils import (
+    auth_failure_is_persistent,
+    clear_auth_failure,
+    fetch_csrf,
+    persist_cookie_to_entry,
+    retry_auth_operation,
+    send_operation,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,9 +95,13 @@ class _STFOperationButton(ButtonEntity):
             try:
                 await fetch_csrf(self.hass, session, self._entry_id)
             except ConfigEntryAuthFailed:
-                _LOGGER.debug("Auth failed while fetching CSRF; starting reauth")
-                self._start_reauth()
+                if auth_failure_is_persistent(self.hass, self._entry_id):
+                    _LOGGER.debug("Auth failed continuously while fetching CSRF; starting reauth")
+                    self._start_reauth()
+                else:
+                    _LOGGER.debug("Temporary auth rejection while fetching CSRF; retaining session")
                 return None, None
+            clear_auth_failure(self.hass, self._entry_id)
             csrf_token = self.hass.data[DOMAIN][self._entry_id].get("_csrf")
 
         return session, csrf_token
@@ -111,24 +120,27 @@ class _STFOperationButton(ButtonEntity):
         if extra:
             payload.update(extra)
 
-        url = f"{STF_BASE_URL}{STF_ADD_OPERATION_PATH}?_csrf={csrf_token}"
-
         try:
-            async with session.post(url, json=payload) as response:
-                txt = await response.text()
-                _LOGGER.debug("Operation=%s HTTP=%s payload=%s resp=%s", operation, response.status, payload, txt)
-
-                if response.status == 200:
-                    return True
-
-                _LOGGER.warning("Operation %s failed (HTTP %s). Refreshing CSRF.", operation, response.status)
-                try:
-                    await fetch_csrf(self.hass, session, self._entry_id)
-                except ConfigEntryAuthFailed:
-                    _LOGGER.debug("Auth failed while refreshing CSRF; starting reauth")
-                    self._start_reauth()
-                return False
-
+            await retry_auth_operation(
+                lambda: send_operation(
+                    self.hass,
+                    session,
+                    self._entry_id,
+                    payload,
+                ),
+            )
+            clear_auth_failure(self.hass, self._entry_id)
+            entry = self.hass.config_entries.async_get_entry(self._entry_id)
+            if entry:
+                await persist_cookie_to_entry(self.hass, entry, session)
+            return True
+        except ConfigEntryAuthFailed:
+            if auth_failure_is_persistent(self.hass, self._entry_id):
+                _LOGGER.warning("Operation %s requires renewed authentication", operation)
+                self._start_reauth()
+            else:
+                _LOGGER.warning("Operation %s hit a temporary authentication rejection", operation)
+            return False
         except Exception as err:
             _LOGGER.exception("Exception while posting operation %s: %s", operation, err)
             return False

@@ -25,8 +25,10 @@ from .const import (
 )
 from .coordinator import SmartThingsFindCoordinator
 from .utils import (
+    auth_failure_is_persistent,
     parse_cookie_header,
     apply_cookies_to_session,
+    clear_auth_failure,
     make_session,
     fetch_csrf,
     get_devices,
@@ -91,6 +93,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         # Validate session + store csrf
         await fetch_csrf(hass, session, entry.entry_id)
+        clear_auth_failure(hass, entry.entry_id)
 
         try:
             await persist_cookie_to_entry(hass, entry, session)
@@ -128,11 +131,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.async_on_unload(entry.add_update_listener(_async_update_listener))
         return True
 
-    except ConfigEntryAuthFailed:
+    except ConfigEntryAuthFailed as err:
         try:
             await session.close()
         except Exception:  # noqa: BLE001
             pass
+        if not auth_failure_is_persistent(hass, entry.entry_id):
+            raise ConfigEntryNotReady(
+                "SmartThings Find temporarily rejected the saved session; retrying before reauth"
+            ) from err
         raise
     except Exception as err:
         try:

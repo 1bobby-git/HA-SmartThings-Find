@@ -12,7 +12,14 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import CONF_KEEPALIVE_INTERVAL_DEFAULT
-from .utils import get_device_location, keepalive_ping, persist_cookie_to_entry
+from .utils import (
+    auth_failure_is_persistent,
+    clear_auth_failure,
+    get_device_location,
+    keepalive_ping,
+    persist_cookie_to_entry,
+    retry_auth_operation,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -70,11 +77,21 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_keepalive(self, _now=None) -> None:
         """Ping STF endpoints to keep the web session alive."""
         try:
-            await keepalive_ping(self.hass, self.session, self.entry.entry_id)
+            await retry_auth_operation(
+                lambda: keepalive_ping(
+                    self.hass,
+                    self.session,
+                    self.entry.entry_id,
+                ),
+            )
+            clear_auth_failure(self.hass, self.entry.entry_id)
             await persist_cookie_to_entry(self.hass, self.entry, self.session)
         except ConfigEntryAuthFailed as err:
-            _LOGGER.warning("KeepAlive auth failed; starting reauth: %s", err)
-            self.entry.async_start_reauth(self.hass)
+            if auth_failure_is_persistent(self.hass, self.entry.entry_id):
+                _LOGGER.warning("Authentication failed continuously; starting reauth: %s", err)
+                self.entry.async_start_reauth(self.hass)
+            else:
+                _LOGGER.warning("Temporary authentication rejection; keeping session for retry: %s", err)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("KeepAlive failed: %s", err)
 
@@ -130,6 +147,19 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # -------- DataUpdateCoordinator --------
 
     async def _async_update_data(self) -> dict[str, Any]:
+        """Keep a rejected session long enough to distinguish outage from expiry."""
+        try:
+            result = await retry_auth_operation(self._async_update_data_once)
+        except ConfigEntryAuthFailed as err:
+            if auth_failure_is_persistent(self.hass, self.entry.entry_id):
+                raise
+            raise UpdateFailed(
+                "SmartThings Find temporarily rejected the saved session; retrying"
+            ) from err
+        clear_auth_failure(self.hass, self.entry.entry_id)
+        return result
+
+    async def _async_update_data_once(self) -> dict[str, Any]:
         try:
             results: dict[str, Any] = {}
 

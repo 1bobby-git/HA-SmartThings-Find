@@ -41,6 +41,11 @@ CONF_UPDATE_INTERVAL_DEFAULT: Final = 120  # seconds
 CONF_KEEPALIVE_INTERVAL: Final = "keepalive_interval"
 CONF_KEEPALIVE_INTERVAL_DEFAULT: Final = 300  # seconds (5 min)
 
+# A single STF "Logout" body can be transient. Retry quickly, then keep the
+# entry loaded/unavailable before asking the user to replace a still-valid cookie.
+AUTH_RETRY_DELAYS: Final[tuple[int, ...]] = (2, 5, 15)
+AUTH_FAILURE_GRACE_PERIOD: Final = 30 * 60
+
 # (저장 구조는 BOOL 유지)
 CONF_ACTIVE_MODE_SMARTTAGS: Final = "active_mode_smarttags"
 CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT: Final = True
