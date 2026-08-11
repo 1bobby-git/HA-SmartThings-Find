@@ -49,7 +49,7 @@ def _install_homeassistant_stubs() -> None:
 
 
 def _install_optional_dependency_stubs() -> None:
-    if importlib.util.find_spec("aiohttp") is None:
+    if "aiohttp" not in sys.modules and importlib.util.find_spec("aiohttp") is None:
         aiohttp = types.ModuleType("aiohttp")
 
         class ClientSession:
@@ -68,7 +68,7 @@ def _install_optional_dependency_stubs() -> None:
         aiohttp.ClientTimeout = ClientTimeout
         sys.modules["aiohttp"] = aiohttp
 
-    if importlib.util.find_spec("yarl") is None:
+    if "yarl" not in sys.modules and importlib.util.find_spec("yarl") is None:
         yarl = types.ModuleType("yarl")
 
         class URL:
