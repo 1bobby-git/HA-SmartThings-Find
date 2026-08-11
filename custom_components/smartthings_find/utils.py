@@ -4,6 +4,7 @@ import asyncio
 import html
 import json
 import logging
+import math
 import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -214,6 +215,17 @@ def clear_auth_failure(hass: HomeAssistant, entry_id: str) -> None:
     entry_data = hass.data.get(DOMAIN, {}).get(entry_id)
     if entry_data is not None:
         entry_data.pop("auth_failure_started", None)
+
+
+def normalize_location_accuracy(value: Any) -> int:
+    """Return the numeric accuracy HA requires for GPS tracker zone checks."""
+    try:
+        accuracy = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(accuracy) or accuracy < 0:
+        return 0
+    return int(round(accuracy))
 
 
 async def persist_cookie_to_entry(

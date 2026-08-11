@@ -143,6 +143,13 @@ class _FakeSession:
 
 
 class UtilsLocationTest(unittest.IsolatedAsyncioTestCase):
+    def test_normalize_location_accuracy_never_returns_none(self) -> None:
+        self.assertEqual(utils.normalize_location_accuracy(None), 0)
+        self.assertEqual(utils.normalize_location_accuracy("invalid"), 0)
+        self.assertEqual(utils.normalize_location_accuracy(float("nan")), 0)
+        self.assertEqual(utils.normalize_location_accuracy(-1), 0)
+        self.assertEqual(utils.normalize_location_accuracy(5.6), 6)
+
     def test_parse_stf_date_preserves_utc_timezone(self) -> None:
         self.assertEqual(
             utils.parse_stf_date("20260804123456"),

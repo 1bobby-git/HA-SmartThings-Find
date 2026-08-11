@@ -9,6 +9,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .utils import normalize_location_accuracy
 
 STF_BASE_URL = "https://smartthingsfind.samsung.com"
 
@@ -130,8 +131,7 @@ class SmartThingsFindTracker(CoordinatorEntity, TrackerEntity):
         return loc.get("longitude")
 
     @property
-    def location_accuracy(self) -> int | None:
+    def location_accuracy(self) -> int:
         res = self.coordinator.data.get(self._dvce_id) if self.coordinator.data else None
         loc = (res or {}).get("used_loc") or {}
-        acc = loc.get("gps_accuracy")
-        return int(acc) if acc is not None else None
+        return normalize_location_accuracy(loc.get("gps_accuracy"))
