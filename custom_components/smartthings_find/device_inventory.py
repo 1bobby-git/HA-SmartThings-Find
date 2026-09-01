@@ -42,6 +42,33 @@ def _existing_device(
     return None
 
 
+def migrate_registered_identifiers(
+    hass: HomeAssistant,
+    entry_id: str,
+    devices: list[dict[str, Any]],
+) -> None:
+    """Remove identifiers borrowed from other integrations in older releases."""
+    registry = device_registry.async_get(hass)
+    update_device = getattr(registry, "async_update_device", None)
+    if not callable(update_device):
+        return
+
+    for device in devices:
+        raw = device.get("data") or {}
+        device_id = raw.get("dvceID")
+        if device_id is None:
+            continue
+        identifier = (DOMAIN, str(device_id))
+        existing = _existing_device(hass, entry_id, identifier)
+        if existing is None or set(existing.identifiers) == {identifier}:
+            continue
+        update_device(existing.id, new_identifiers={identifier})
+        _LOGGER.debug(
+            "Migrated SmartThings Find device identifiers for %s",
+            str(device_id),
+        )
+
+
 async def get_devices(
     hass: HomeAssistant,
     session: aiohttp.ClientSession,
