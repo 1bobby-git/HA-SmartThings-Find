@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -22,7 +20,7 @@ from .const import (
     DATA_SESSION,
 )
 from .coordinator import SmartThingsFindCoordinator
-from .device_inventory import get_devices
+from .device_inventory import get_devices, migrate_registered_identifiers
 from .session_store import async_load_cookie_line, persist_cookie_to_store
 from .utils import (
     apply_cookies_to_session,
@@ -32,8 +30,6 @@ from .utils import (
     make_session,
     parse_cookie_header,
 )
-
-_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.DEVICE_TRACKER, Platform.SENSOR, Platform.BUTTON]
 
@@ -127,6 +123,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        migrate_registered_identifiers(hass, entry.entry_id, devices)
         entry.async_on_unload(entry.add_update_listener(_async_update_listener))
         return True
 
