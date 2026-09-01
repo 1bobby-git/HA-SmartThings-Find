@@ -9,30 +9,28 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
 from .const import (
     DOMAIN,
-    CONF_COOKIE,
-    CONF_UPDATE_INTERVAL,
-    CONF_UPDATE_INTERVAL_DEFAULT,
-    CONF_KEEPALIVE_INTERVAL,
-    CONF_KEEPALIVE_INTERVAL_DEFAULT,
-    CONF_ACTIVE_MODE_SMARTTAGS,
-    CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT,
     CONF_ACTIVE_MODE_OTHERS,
     CONF_ACTIVE_MODE_OTHERS_DEFAULT,
-    CONF_ST_IDENTIFIER,
-    DATA_SESSION,
+    CONF_ACTIVE_MODE_SMARTTAGS,
+    CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT,
+    CONF_KEEPALIVE_INTERVAL,
+    CONF_KEEPALIVE_INTERVAL_DEFAULT,
+    CONF_UPDATE_INTERVAL,
+    CONF_UPDATE_INTERVAL_DEFAULT,
     DATA_COORDINATOR,
     DATA_DEVICES,
+    DATA_SESSION,
 )
 from .coordinator import SmartThingsFindCoordinator
+from .device_inventory import get_devices
+from .session_store import async_load_cookie_line, persist_cookie_to_store
 from .utils import (
-    auth_failure_is_persistent,
-    parse_cookie_header,
     apply_cookies_to_session,
+    auth_failure_is_persistent,
     clear_auth_failure,
-    make_session,
     fetch_csrf,
-    get_devices,
-    persist_cookie_to_entry,
+    make_session,
+    parse_cookie_header,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -46,15 +44,16 @@ async def async_setup(hass: HomeAssistant, _config) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload when options/data change."""
+    """Reload after a user changes options or replaces the configured cookie."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up one SmartThings Find account."""
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN].setdefault(entry.entry_id, {})
 
-    cookie_line = (entry.data.get(CONF_COOKIE) or "").strip()
+    cookie_line = await async_load_cookie_line(hass, entry)
     if not cookie_line:
         raise ConfigEntryAuthFailed("missing_cookie")
 
@@ -65,48 +64,49 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     session = make_session(hass)
     apply_cookies_to_session(session, cookies)
 
-    # options
-    active_smarttags = entry.options.get(CONF_ACTIVE_MODE_SMARTTAGS, CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT)
-    active_others = entry.options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT)
-    st_identifier = entry.options.get(CONF_ST_IDENTIFIER)
+    active_smarttags = entry.options.get(
+        CONF_ACTIVE_MODE_SMARTTAGS,
+        CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT,
+    )
+    active_others = entry.options.get(
+        CONF_ACTIVE_MODE_OTHERS,
+        CONF_ACTIVE_MODE_OTHERS_DEFAULT,
+    )
 
-    update_interval_s = entry.options.get(CONF_UPDATE_INTERVAL, CONF_UPDATE_INTERVAL_DEFAULT)
     try:
-        update_interval_s = int(update_interval_s)
-    except Exception:  # noqa: BLE001
+        update_interval_s = int(
+            entry.options.get(
+                CONF_UPDATE_INTERVAL,
+                CONF_UPDATE_INTERVAL_DEFAULT,
+            )
+        )
+    except (TypeError, ValueError):
         update_interval_s = int(CONF_UPDATE_INTERVAL_DEFAULT)
 
-    keepalive_interval_s = entry.options.get(CONF_KEEPALIVE_INTERVAL, CONF_KEEPALIVE_INTERVAL_DEFAULT)
     try:
-        keepalive_interval_s = int(keepalive_interval_s)
-    except Exception:  # noqa: BLE001
+        keepalive_interval_s = int(
+            entry.options.get(
+                CONF_KEEPALIVE_INTERVAL,
+                CONF_KEEPALIVE_INTERVAL_DEFAULT,
+            )
+        )
+    except (TypeError, ValueError):
         keepalive_interval_s = int(CONF_KEEPALIVE_INTERVAL_DEFAULT)
 
     hass.data[DOMAIN][entry.entry_id].update(
         {
             CONF_ACTIVE_MODE_SMARTTAGS: bool(active_smarttags),
             CONF_ACTIVE_MODE_OTHERS: bool(active_others),
-            CONF_ST_IDENTIFIER: st_identifier,
         }
     )
 
     try:
-        # Validate session + store csrf
         await fetch_csrf(hass, session, entry.entry_id)
         clear_auth_failure(hass, entry.entry_id)
+        await persist_cookie_to_store(hass, entry, session)
 
-        try:
-            await persist_cookie_to_entry(hass, entry, session)
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("cookie persist after fetch_csrf failed: %s", err)
-
-        # Load devices
         devices = await get_devices(hass, session, entry.entry_id)
-
-        try:
-            await persist_cookie_to_entry(hass, entry, session)
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("cookie persist after get_devices failed: %s", err)
+        await persist_cookie_to_store(hass, entry, session)
 
         coordinator = SmartThingsFindCoordinator(
             hass=hass,
@@ -116,7 +116,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             update_interval_s=update_interval_s,
             keepalive_interval_s=keepalive_interval_s,
         )
-
         await coordinator.async_config_entry_first_refresh()
 
         hass.data[DOMAIN][entry.entry_id].update(
@@ -138,7 +137,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             pass
         if not auth_failure_is_persistent(hass, entry.entry_id):
             raise ConfigEntryNotReady(
-                "SmartThings Find temporarily rejected the saved session; retrying before reauth"
+                "SmartThings Find temporarily rejected the saved session; "
+                "retrying before reauth"
             ) from err
         raise
     except Exception as err:
@@ -150,6 +150,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload one SmartThings Find account."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     data = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
