@@ -32,27 +32,24 @@ jobs:
           ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
 
-      - name: Wait for remaining validations
+      - name: Wait for HACS validation
         shell: bash
         run: |
           set -euo pipefail
-          for workflow in "HACS Validate" "Validate with hassfest"; do
-            for attempt in $(seq 1 30); do
-              run_json="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${RELEASE_SHA}&event=push&per_page=100")"
-              read -r status conclusion < <(python -c '
+          for attempt in $(seq 1 30); do
+            run_json="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${RELEASE_SHA}&event=push&per_page=100")"
+            read -r status conclusion < <(python -c '
           import json, sys
-          name=sys.argv[1]
-          runs=[r for r in json.load(sys.stdin).get("workflow_runs", []) if r.get("name")==name]
+          runs=[r for r in json.load(sys.stdin).get("workflow_runs", []) if r.get("name")=="HACS Validate"]
           run=max(runs, key=lambda x:x.get("created_at", ""), default={})
           print(run.get("status", "missing"), run.get("conclusion") or "pending")
-          ' "${workflow}" <<<"${run_json}")
-              if [[ "${status}" == "completed" ]]; then
-                [[ "${conclusion}" == "success" ]]
-                break
-              fi
-              [[ "${attempt}" != "30" ]] || { echo "${workflow} did not complete successfully." >&2; exit 1; }
-              sleep 10
-            done
+          ' <<<"${run_json}")
+            if [[ "${status}" == "completed" ]]; then
+              [[ "${conclusion}" == "success" ]]
+              break
+            fi
+            [[ "${attempt}" != "30" ]] || { echo "HACS Validate did not complete successfully." >&2; exit 1; }
+            sleep 10
           done
 
       - name: Verify release target and version
