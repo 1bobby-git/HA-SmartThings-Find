@@ -1,5 +1,11 @@
 # 변경 이력
 
+## 1.3.3 - 2026-09-02
+
+- SmartThings Web과 동일한 최종 SmartThings 기본 아이콘을 적용했습니다.
+- Home Assistant 로컬 Brands Proxy API용 256px 및 512px 투명 PNG를 갱신했습니다.
+- 위치 조회, 로그인 및 기기 명령 동작은 변경하지 않았습니다.
+
 ## 1.3.1 - 2026-09-01
 
 - 서버가 회전시킨 세션 쿠키를 config entry 대신 Home Assistant 비공개 저장소에 보관해 불필요한 통합 재로드를 제거했습니다.
