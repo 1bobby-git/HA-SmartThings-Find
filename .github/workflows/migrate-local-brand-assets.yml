@@ -1,0 +1,194 @@
+name: Migrate local brand assets
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/migrate-local-brand-assets.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.13"
+
+      - name: Install image tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends librsvg2-bin
+          python -m pip install --disable-pip-version-check pillow
+
+      - name: Build local SmartThings brand assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "${tmp}"' EXIT
+          curl --fail --location --retry 5 --retry-all-errors \
+            --user-agent "Mozilla/5.0 (Home Assistant SmartThings brand migration)" \
+            "https://img.samsungapps.com/productNew/000004262296/ENG/IconImage_20260430003558303_NEW_WAP_ICON_512_512.png" \
+            --output "${tmp}/icon-source.png"
+          curl --fail --location --retry 5 --retry-all-errors \
+            --user-agent "Mozilla/5.0 (Home Assistant SmartThings brand migration)" \
+            "https://commons.wikimedia.org/wiki/Special:Redirect/file/SmartThings%20Logo%202024.svg" \
+            --output "${tmp}/logo-source.svg"
+          test "$(head -c 8 "${tmp}/icon-source.png" | od -An -tx1 | tr -d ' \n')" = "89504e470d0a1a0a"
+          grep -qi '<svg' "${tmp}/logo-source.svg"
+          rsvg-convert --height 200 "${tmp}/logo-source.svg" --output "${tmp}/logo.png"
+          rsvg-convert --height 400 "${tmp}/logo-source.svg" --output "${tmp}/logo@2x.png"
+          python - "${tmp}" <<'PY'
+          from collections import deque
+          from pathlib import Path
+          from PIL import Image
+          import sys
+
+          tmp = Path(sys.argv[1])
+          target = Path("custom_components/smartthings_find/brand")
+          target.mkdir(parents=True, exist_ok=True)
+
+          source = Image.open(tmp / "icon-source.png").convert("RGBA")
+          px = source.load()
+          width, height = source.size
+          visited = bytearray(width * height)
+          queue = deque()
+
+          def outside_candidate(x: int, y: int) -> bool:
+              r, g, b, _ = px[x, y]
+              return min(r, g, b) >= 245 and max(r, g, b) - min(r, g, b) <= 8
+
+          def enqueue(x: int, y: int) -> None:
+              idx = y * width + x
+              if not visited[idx] and outside_candidate(x, y):
+                  visited[idx] = 1
+                  queue.append((x, y))
+
+          for x in range(width):
+              enqueue(x, 0)
+              enqueue(x, height - 1)
+          for y in range(height):
+              enqueue(0, y)
+              enqueue(width - 1, y)
+
+          while queue:
+              x, y = queue.popleft()
+              r, g, b, _ = px[x, y]
+              px[x, y] = (r, g, b, 0)
+              if x:
+                  enqueue(x - 1, y)
+              if x + 1 < width:
+                  enqueue(x + 1, y)
+              if y:
+                  enqueue(x, y - 1)
+              if y + 1 < height:
+                  enqueue(x, y + 1)
+
+          bbox = source.getchannel("A").getbbox()
+          if bbox is None:
+              raise SystemExit("SmartThings icon became fully transparent")
+          source = source.crop(bbox)
+
+          def save_icon(size: int, name: str) -> None:
+              inner = round(size * 0.94)
+              image = source.copy()
+              image.thumbnail((inner, inner), Image.Resampling.LANCZOS)
+              canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+              canvas.alpha_composite(image, ((size - image.width) // 2, (size - image.height) // 2))
+              canvas.save(target / name, format="PNG", optimize=True)
+
+          save_icon(256, "icon.png")
+          save_icon(512, "icon@2x.png")
+
+          for name in ("logo.png", "logo@2x.png"):
+              image = Image.open(tmp / name).convert("RGBA")
+              bbox = image.getchannel("A").getbbox()
+              if bbox is None:
+                  raise SystemExit(f"{name} is fully transparent")
+              image = image.crop(bbox)
+              image.save(target / name, format="PNG", optimize=True)
+
+              dark = image.copy()
+              pixels = dark.load()
+              for y in range(dark.height):
+                  for x in range(dark.width):
+                      r, g, b, a = pixels[x, y]
+                      if a and max(r, g, b) - min(r, g, b) <= 16:
+                          pixels[x, y] = (255, 255, 255, a)
+              dark_name = "dark_logo@2x.png" if "@2x" in name else "dark_logo.png"
+              dark.save(target / dark_name, format="PNG", optimize=True)
+          PY
+
+      - name: Bump integration version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import json
+          path = Path("custom_components/smartthings_find/manifest.json")
+          manifest = json.loads(path.read_text(encoding="utf-8"))
+          manifest["version"] = "1.3.2"
+          path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          PY
+
+      - name: Validate generated assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+
+          root = Path("custom_components/smartthings_find/brand")
+          expected = {
+              "icon.png": (256, 256),
+              "icon@2x.png": (512, 512),
+              "logo.png": None,
+              "logo@2x.png": None,
+              "dark_logo.png": None,
+              "dark_logo@2x.png": None,
+          }
+          for name, size in expected.items():
+              with Image.open(root / name) as image:
+                  image.load()
+                  if image.format != "PNG" or image.mode != "RGBA":
+                      raise SystemExit(f"Invalid image format/mode: {name} {image.format} {image.mode}")
+                  if size is not None and image.size != size:
+                      raise SystemExit(f"Invalid size: {name} {image.size}")
+                  if image.getchannel("A").getextrema()[0] != 0:
+                      raise SystemExit(f"Missing transparency: {name}")
+                  if "logo" in name:
+                      short = min(image.size)
+                      low, high = ((256, 512) if "@2x" in name else (128, 256))
+                      if not low <= short <= high:
+                          raise SystemExit(f"Invalid logo short side: {name} {short}")
+          PY
+          git diff --check
+
+      - name: Commit migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/migrate-local-brand-assets.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            custom_components/smartthings_find/manifest.json \
+            custom_components/smartthings_find/brand \
+            .github/workflows/migrate-local-brand-assets.yml
+          git commit -m "Migrate SmartThings Find to local brand assets"
+          git push origin HEAD:main
