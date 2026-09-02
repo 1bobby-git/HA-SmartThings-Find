@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows:
+      - Unit tests
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish HACS release
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Check out validated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
+
+      - name: Wait for remaining validations
+        shell: bash
+        run: |
+          set -euo pipefail
+          for workflow in "HACS Validate" "Validate with hassfest"; do
+            for attempt in $(seq 1 30); do
+              run_json="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${RELEASE_SHA}&event=push&per_page=100")"
+              read -r status conclusion < <(python -c '
+          import json, sys
+          name=sys.argv[1]
+          runs=[r for r in json.load(sys.stdin).get("workflow_runs", []) if r.get("name")==name]
+          run=max(runs, key=lambda x:x.get("created_at", ""), default={})
+          print(run.get("status", "missing"), run.get("conclusion") or "pending")
+          ' "${workflow}" <<<"${run_json}")
+              if [[ "${status}" == "completed" ]]; then
+                [[ "${conclusion}" == "success" ]]
+                break
+              fi
+              [[ "${attempt}" != "30" ]] || { echo "${workflow} did not complete successfully." >&2; exit 1; }
+              sleep 10
+            done
+          done
+
+      - name: Verify release target and version
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_main="$(gh api "/repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "${current_main}" != "${RELEASE_SHA}" ]]; then
+            echo "publish=false" >> "${GITHUB_OUTPUT}"
+            echo "Main advanced; refusing to publish a stale release."
+            exit 0
+          fi
+          version="$(python -c 'import json; print(json.load(open("custom_components/smartthings_find/manifest.json", encoding="utf-8"))["version"])')"
+          tag="v${version}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "publish=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "publish=true" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate local brand assets
+        if: steps.release.outputs.publish == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import struct
+          root=Path("custom_components/smartthings_find/brand")
+          expected={"icon.png":(256,256),"icon@2x.png":(512,512),"logo.png":None,"logo@2x.png":None,"dark_logo.png":None,"dark_logo@2x.png":None}
+          for name,size in expected.items():
+              data=(root/name).read_bytes()
+              if data[:8]!=b"\x89PNG\r\n\x1a\n" or data[12:16]!=b"IHDR": raise SystemExit(f"Invalid PNG: {name}")
+              width,height=struct.unpack(">II",data[16:24])
+              if size and (width,height)!=size: raise SystemExit(f"Unexpected size for {name}: {width}x{height}")
+              if "logo" in name:
+                  short=min(width,height)
+                  low,high=(256,512) if "@2x" in name else (128,256)
+                  if not low<=short<=high: raise SystemExit(f"Unexpected logo short side for {name}: {short}")
+          PY
+
+      - name: Build integration archive
+        if: steps.release.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="smartthings_find-${{ steps.release.outputs.tag }}.zip"
+          git archive --format=zip --prefix=custom_components/smartthings_find/ --output="${asset}" "${RELEASE_SHA}:custom_components/smartthings_find"
+          unzip -t "${asset}"
+          echo "asset=${asset}" >> "${GITHUB_ENV}"
+
+      - name: Publish release
+        if: steps.release.outputs.publish == 'true'
+        shell: bash
+        run: |
+          gh release create "${{ steps.release.outputs.tag }}" \
+            "${asset}#Home Assistant 통합 설치 파일" \
+            --target "${RELEASE_SHA}" \
+            --title "SmartThings Find ${{ steps.release.outputs.tag }}" \
+            --notes "SmartThings Web과 통일된 로컬 브랜드 아이콘 및 라이트/다크 로고를 포함합니다. Home Assistant 2026.3 이상에서는 Brands Proxy API를 통해 로컬 자산이 기존 CDN 자산보다 우선 사용됩니다. 위치 조회 및 명령 동작 변경은 없습니다."
