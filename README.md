@@ -1,6 +1,6 @@
 <!-- project-branding:start -->
 <p align="center">
-  <img src="media/readme-logo.svg" alt="SmartThings Find 가로형 로고" width="480">
+  <img src="custom_components/smartthings_find/brand/logo@2x.png" alt="SmartThings Find 로고" width="520">
 </p>
 <p align="center">
   <a href="https://github.com/1bobby-git/HA-SmartThings-Find/stargazers"><img src="https://img.shields.io/github/stars/1bobby-git/HA-SmartThings-Find?style=flat-square&logo=github&label=Stars" alt="GitHub Stars"></a>
