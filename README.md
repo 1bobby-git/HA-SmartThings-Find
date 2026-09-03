@@ -3,9 +3,11 @@
   <img src="media/readme-logo.svg" alt="SmartThings Find 가로형 로고" width="480">
 </p>
 <p align="center">
-  <a href="https://github.com/1bobby-git/HA-SmartThings-Find/stargazers">
-    <img src="https://img.shields.io/github/stars/1bobby-git/HA-SmartThings-Find?style=flat-square&logo=github&label=Stars" alt="GitHub Stars">
-  </a>
+  <a href="https://github.com/1bobby-git/HA-SmartThings-Find/stargazers"><img src="https://img.shields.io/github/stars/1bobby-git/HA-SmartThings-Find?style=flat-square&logo=github&label=Stars" alt="GitHub Stars"></a>
+  <a href="https://github.com/1bobby-git/HA-SmartThings-Find/releases"><img src="https://img.shields.io/github/v/release/1bobby-git/HA-SmartThings-Find?style=flat-square&label=Release" alt="Latest Release"></a>
+  <a href="https://github.com/1bobby-git/HA-SmartThings-Find/blob/main/custom_components/smartthings_find/manifest.json"><img src="https://img.shields.io/badge/Architecture-independent-0ea5e9?style=flat-square" alt="Architecture independent"></a>
+  <a href="https://github.com/1bobby-git/HA-SmartThings-Find/blob/main/LICENSE"><img src="https://img.shields.io/github/license/1bobby-git/HA-SmartThings-Find?style=flat-square&label=License" alt="License"></a>
+  <a href="https://github.com/1bobby-git/HA-SmartThings-Find/commits/main"><img src="https://img.shields.io/github/last-commit/1bobby-git/HA-SmartThings-Find?style=flat-square&label=Updated" alt="Last Commit"></a>
 </p>
 <!-- project-branding:end -->
 
