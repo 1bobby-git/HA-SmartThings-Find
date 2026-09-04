@@ -9,6 +9,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
+from .account_callback import normalize_samsung_account_callback
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -22,8 +23,13 @@ class SamsungAccountAuth:
     """Run samsung-re-find authentication with HA-owned private state paths.
 
     The third-party library stores a long-lived Samsung Account master grant and
-    rotating derived credentials.  The integration stores no password or second
+    rotating derived credentials. The integration stores no password or second
     factor and only asks the library for a validated/rebuilt web JSESSIONID.
+
+    Interactive completion is deliberately limited to callbacks that actually
+    contain Samsung's encrypted authentication fields. A bare browser landing
+    page such as ``.../ANDROIDSDK/signInComplete`` cannot be turned into a
+    callback because its data remains in the user's separate browser session.
     """
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -44,7 +50,7 @@ class SamsungAccountAuth:
         self._lock = lock
 
     def _new_client(self):
-        # Imported lazily so legacy cookie entries can still load even if an
+        # Imported lazily so cookie entries can still load even if an
         # installation temporarily has a dependency problem.
         from samsung_find.auth import SamsungAuth
 
@@ -87,9 +93,9 @@ class SamsungAccountAuth:
 
     async def async_complete(self, redirect_uri: str) -> str:
         """Finish interactive sign-in and return a validated web cookie line."""
-        callback = str(redirect_uri or "").strip()
-        if not callback:
-            raise SamsungAccountAuthError("Samsung redirect URI is empty")
+        # Normalize before entering the auth lock. This rejects callback-free
+        # signInComplete pages without touching or consuming pending auth state.
+        callback = normalize_samsung_account_callback(redirect_uri)
 
         async with self._lock:
             try:
