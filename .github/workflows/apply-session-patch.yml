@@ -17,7 +17,7 @@ jobs:
         with:
           ref: feat/persistent-samsung-session
           fetch-depth: 0
-      - name: Apply verified patch
+      - name: Apply verified non-workflow patch
         shell: bash
         run: |
           set -euo pipefail
@@ -25,10 +25,13 @@ jobs:
           base64 --decode /tmp/session-patch.b64 > /tmp/session-patch.tar.gz
           echo "a1d9f8328ad82f5a65e8214d8a3c6bef8674c63d7e9068f357f7658151518cf1  /tmp/session-patch.tar.gz" | sha256sum --check -
           tar -xzf /tmp/session-patch.tar.gz
+          git restore --source=HEAD -- \
+            .github/workflows/apply-session-patch.yml \
+            .github/workflows/release.yml \
+            .github/workflows/unit-tests.yaml
           rm -f tools/session-patch.part*
           rmdir tools 2>/dev/null || true
-          rm -f .github/workflows/apply-session-patch.yml
-      - name: Commit applied patch
+      - name: Commit applied source patch
         shell: bash
         run: |
           set -euo pipefail
