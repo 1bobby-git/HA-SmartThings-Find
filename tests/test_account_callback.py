@@ -93,6 +93,21 @@ class AccountCallbackTests(unittest.TestCase):
             callback.normalize_samsung_account_callback(value),
         )
 
+    def test_json_escaped_native_callback_is_accepted(self) -> None:
+        escaped = const.SAMSUNG_ACCOUNT_APP_REDIRECT_URI.replace(
+            "://",
+            r":\/\/",
+        )
+
+        normalized = callback.normalize_samsung_account_callback(
+            f"{escaped}?{FIELDS}"
+        )
+
+        self.assertEqual(
+            f"{const.SAMSUNG_ACCOUNT_APP_REDIRECT_URI}?{FIELDS}",
+            normalized,
+        )
+
     def test_native_callback_can_be_extracted_from_browser_error_text(self) -> None:
         value = (
             "앱을 열 수 없습니다: `"
