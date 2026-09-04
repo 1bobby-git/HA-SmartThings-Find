@@ -12,9 +12,9 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
+    DATA_AUTH_MANAGER,
     DATA_COORDINATOR,
     DATA_DEVICES,
-    DATA_SESSION,
     DOMAIN,
     LOCATION_POLL_DELAYS,
     OP_CHECK_CONNECTION_WITH_LOCATION,
@@ -22,14 +22,7 @@ from .const import (
     REFRESH_DELAY_IMMEDIATE,
     REFRESH_DELAY_SHORT,
 )
-from .session_store import persist_cookie_to_store
-from .utils import (
-    auth_failure_is_persistent,
-    clear_auth_failure,
-    fetch_csrf,
-    retry_auth_operation,
-    send_operation,
-)
+from .utils import auth_failure_is_persistent, clear_auth_failure
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -91,34 +84,15 @@ class _STFOperationButton(ButtonEntity):
             return
         self.hass.async_create_task(coroutine)
 
-    async def _get_session_and_csrf(self):
-        entry_data = self.hass.data[DOMAIN].get(self._entry_id, {})
-        session = entry_data.get(DATA_SESSION) or entry_data.get("session")
-        csrf_token = entry_data.get("_csrf")
-
-        if session is None:
-            _LOGGER.error("No session found for entry_id=%s", self._entry_id)
-            return None, None
-
-        if not csrf_token:
-            try:
-                await fetch_csrf(self.hass, session, self._entry_id)
-            except ConfigEntryAuthFailed:
-                if auth_failure_is_persistent(self.hass, self._entry_id):
-                    self._start_reauth()
-                return None, None
-            clear_auth_failure(self.hass, self._entry_id)
-            csrf_token = self.hass.data[DOMAIN][self._entry_id].get("_csrf")
-
-        return session, csrf_token
-
     async def _post_operation(
         self,
         operation: str,
         extra: dict[str, Any] | None = None,
     ) -> bool:
-        session, csrf_token = await self._get_session_and_csrf()
-        if session is None or not csrf_token:
+        runtime = self.hass.data[DOMAIN].get(self._entry_id, {})
+        auth_manager = runtime.get(DATA_AUTH_MANAGER)
+        if auth_manager is None:
+            _LOGGER.error("No auth manager found for entry_id=%s", self._entry_id)
             return False
 
         payload: dict[str, Any] = {
@@ -130,38 +104,30 @@ class _STFOperationButton(ButtonEntity):
             payload.update(extra)
 
         try:
-            await retry_auth_operation(
-                lambda: send_operation(
-                    self.hass,
-                    session,
-                    self._entry_id,
-                    payload,
-                ),
-            )
+            await auth_manager.async_send_operation(payload)
             clear_auth_failure(self.hass, self._entry_id)
         except ConfigEntryAuthFailed:
             if auth_failure_is_persistent(self.hass, self._entry_id):
                 _LOGGER.warning(
-                    "Operation %s requires renewed authentication",
+                    "Operation %s requires renewed Samsung Account authentication",
                     operation,
                 )
                 self._start_reauth()
             else:
                 _LOGGER.warning(
-                    "Operation %s hit a temporary authentication rejection",
+                    "Operation %s could not be authenticated; the session was "
+                    "repaired for the next request when possible",
                     operation,
                 )
             return False
         except Exception as err:  # noqa: BLE001
-            _LOGGER.exception("SmartThings Find operation %s failed: %s", operation, err)
+            _LOGGER.error(
+                "SmartThings Find operation %s failed (%s)",
+                operation,
+                type(err).__name__,
+            )
             return False
 
-        entry = self._entry()
-        if entry:
-            try:
-                await persist_cookie_to_store(self.hass, entry, session)
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("Cookie persistence after operation failed: %s", err)
         return True
 
     async def _kick_refresh(self) -> None:
@@ -173,7 +139,10 @@ class _STFOperationButton(ButtonEntity):
         try:
             await coordinator.async_request_refresh()
         except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("Immediate coordinator refresh failed: %s", err)
+            _LOGGER.debug(
+                "Immediate coordinator refresh failed: %s",
+                type(err).__name__,
+            )
             return
 
         async def _delayed_refresh(delay_s: int) -> None:
@@ -183,7 +152,11 @@ class _STFOperationButton(ButtonEntity):
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("Delayed refresh (%ss) failed: %s", delay_s, err)
+                _LOGGER.debug(
+                    "Delayed refresh (%ss) failed: %s",
+                    delay_s,
+                    type(err).__name__,
+                )
 
         for delay in (REFRESH_DELAY_IMMEDIATE, REFRESH_DELAY_SHORT):
             self._create_background_task(
@@ -304,9 +277,16 @@ class UpdateLocationButton(_STFOperationButton):
             try:
                 await coordinator.async_request_refresh()
             except Exception as err:  # noqa: BLE001
-                _LOGGER.debug("Poll refresh failed (%ss): %s", delay_s, err)
+                _LOGGER.debug(
+                    "Poll refresh failed (%ss): %s",
+                    delay_s,
+                    type(err).__name__,
+                )
 
         try:
             coordinator.mark_last_update_timeout(self._dvce_id)
         except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("mark_last_update_timeout failed: %s", err)
+            _LOGGER.debug(
+                "mark_last_update_timeout failed: %s",
+                type(err).__name__,
+            )

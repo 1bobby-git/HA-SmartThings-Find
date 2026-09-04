@@ -1,25 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Callable
+import random
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import CONF_KEEPALIVE_INTERVAL_DEFAULT
-from .session_store import persist_cookie_to_store
-from .utils import (
-    auth_failure_is_persistent,
-    clear_auth_failure,
-    get_device_location,
-    keepalive_ping,
-    retry_auth_operation,
-)
+from .auth_manager import SmartThingsFindAuthManager
+from .const import CONF_KEEPALIVE_INTERVAL_DEFAULT, KEEPALIVE_JITTER_RATIO
+from .utils import auth_failure_is_persistent, clear_auth_failure
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +26,7 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         hass: HomeAssistant,
         entry: ConfigEntry,
         session,
+        auth_manager: SmartThingsFindAuthManager,
         devices: list[dict[str, Any]],
         update_interval_s: int,
         keepalive_interval_s: int = CONF_KEEPALIVE_INTERVAL_DEFAULT,
@@ -45,12 +40,13 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.entry = entry
         self.session = session
+        self.auth_manager = auth_manager
         self.devices = devices
         self._keepalive_interval_s = max(
             60,
             int(keepalive_interval_s or CONF_KEEPALIVE_INTERVAL_DEFAULT),
         )
-        self._keepalive_unsub: Callable[[], None] | None = None
+        self._keepalive_task: asyncio.Task | None = None
         self._last_update_fetch: dict[str, dict[str, Any]] = {}
         self._last_update_fetch_result: dict[str, str] = {}
 
@@ -60,53 +56,74 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._start_keepalive()
 
     def _start_keepalive(self) -> None:
-        """Schedule periodic keepalive to reduce idle session expiry."""
-        if self._keepalive_unsub is not None:
-            self._keepalive_unsub()
-            self._keepalive_unsub = None
+        """Run keepalive with bounded jitter to avoid an exact request cadence."""
+        if self._keepalive_task is not None:
+            self._keepalive_task.cancel()
+            self._keepalive_task = None
 
-        self._keepalive_unsub = async_track_time_interval(
-            self.hass,
-            self._async_keepalive,
-            timedelta(seconds=self._keepalive_interval_s),
+        coroutine = self._keepalive_loop()
+        create_entry_task = getattr(
+            self.entry,
+            "async_create_background_task",
+            None,
         )
+        if callable(create_entry_task):
+            self._keepalive_task = create_entry_task(
+                self.hass,
+                coroutine,
+                "smartthings_find_session_keepalive",
+            )
+        else:
+            self._keepalive_task = self.hass.async_create_task(coroutine)
+
         _LOGGER.debug(
-            "SmartThings Find keepalive scheduled every %ss",
+            "SmartThings Find keepalive scheduled around every %ss",
             self._keepalive_interval_s,
         )
 
-    async def _async_keepalive(self, _now=None) -> None:
-        """Ping SmartThings Find without mutating the config entry."""
-        try:
-            await retry_auth_operation(
-                lambda: keepalive_ping(
-                    self.hass,
-                    self.session,
-                    self.entry.entry_id,
-                ),
+    async def _keepalive_loop(self) -> None:
+        while True:
+            jitter = random.uniform(
+                1.0 - KEEPALIVE_JITTER_RATIO,
+                1.0 + KEEPALIVE_JITTER_RATIO,
             )
+            delay = max(60.0, self._keepalive_interval_s * jitter)
+            try:
+                await asyncio.sleep(delay)
+                await self._async_keepalive()
+            except asyncio.CancelledError:
+                raise
+
+    async def _async_keepalive(self) -> None:
+        """Ping SmartThings Find and rebuild an expired web session when possible."""
+        try:
+            await self.auth_manager.async_keepalive()
             clear_auth_failure(self.hass, self.entry.entry_id)
-            await persist_cookie_to_store(self.hass, self.entry, self.session)
         except ConfigEntryAuthFailed as err:
             if auth_failure_is_persistent(self.hass, self.entry.entry_id):
                 _LOGGER.warning(
-                    "Authentication failed continuously; starting reauth: %s",
-                    err,
+                    "Authentication recovery failed continuously; starting reauth: %s",
+                    type(err).__name__,
                 )
                 self.entry.async_start_reauth(self.hass)
             else:
                 _LOGGER.warning(
-                    "Temporary authentication rejection; keeping session for retry: %s",
-                    err,
+                    "Authentication recovery is temporarily unavailable; keeping "
+                    "the entry loaded for another retry"
                 )
         except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("KeepAlive failed: %s", err)
+            _LOGGER.debug("KeepAlive failed: %s", type(err).__name__)
 
     async def async_shutdown(self) -> None:
         """Stop keepalive and coordinator tasks."""
-        if self._keepalive_unsub is not None:
-            self._keepalive_unsub()
-            self._keepalive_unsub = None
+        task = self._keepalive_task
+        self._keepalive_task = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await super().async_shutdown()
 
     def mark_pending_last_update(self, dvce_id: str, old_gps_date) -> None:
@@ -155,18 +172,18 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         """Keep a rejected session long enough to distinguish outage from expiry."""
         try:
-            result = await retry_auth_operation(self._async_update_data_once)
+            result = await self._async_update_data_once()
         except ConfigEntryAuthFailed as err:
             if auth_failure_is_persistent(self.hass, self.entry.entry_id):
                 raise
             raise UpdateFailed(
-                "SmartThings Find temporarily rejected the saved session; retrying"
+                "SmartThings Find authentication recovery is temporarily unavailable"
             ) from err
         clear_auth_failure(self.hass, self.entry.entry_id)
         return result
 
     async def _async_update_data_once(self) -> dict[str, Any]:
-        """Refresh each device while retaining its last valid payload on a partial failure."""
+        """Refresh devices while retaining last valid data on a partial failure."""
         try:
             results: dict[str, Any] = {}
             previous = self.data if isinstance(self.data, dict) else {}
@@ -178,11 +195,8 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     continue
                 key = str(device_id)
 
-                result = await get_device_location(
-                    hass=self.hass,
-                    session=self.session,
-                    dev_data=device_data,
-                    entry_id=self.entry.entry_id,
+                result = await self.auth_manager.async_get_device_location(
+                    device_data
                 )
 
                 if result is None:
@@ -199,18 +213,6 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._maybe_clear_pending_if_changed(
                     key,
                     location.get("gps_date"),
-                )
-
-            try:
-                await persist_cookie_to_store(
-                    self.hass,
-                    self.entry,
-                    self.session,
-                )
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.debug(
-                    "Cookie persistence after coordinator update failed: %s",
-                    err,
                 )
 
             return results

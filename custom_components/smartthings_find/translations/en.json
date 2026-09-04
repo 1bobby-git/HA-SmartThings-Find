@@ -3,24 +3,43 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "**How to extract the cookie**\n1) Sign in at https://smartthingsfind.samsung.com\n2) DevTools (F12) → Network\n3) Select chkLogin.do (refresh if needed)\n4) Request Headers → Cookie: copy the full line\n\n⚠️ Close the SmartThings Find tab after copying to reduce session conflicts.\n\n**Mode**\n- Passive: read last cached server location (lower battery impact)\n- Active: request a location update first (fresher, higher battery impact)",
+        "description": "Choose an authentication method. **Samsung Account** is recommended because it can automatically issue a new web session from locally stored renewable authorization when the web cookie expires. The manually copied Cookie header remains available for compatibility.",
+        "data": {
+          "auth_method": "Authentication method"
+        }
+      },
+      "account": {
+        "title": "Samsung Account sign-in",
+        "description": "1. [Open the Samsung Account sign-in page]({login_url})\n2. Complete Samsung sign-in and any second-factor prompt.\n3. When the browser reaches an `ms-app://...` address or reports that it cannot open the app, copy the **complete address**.\n4. Paste that address below.\n\nYour password and second factor are handled by Samsung and are not provided to this integration. Renewable authorization is kept in private files under Home Assistant `.storage` and is used only to renew tokens and the web session.\n\n**Mode**\n- Passive: read the cached server location (lower battery impact)\n- Active: request a location update first (fresher, higher battery impact)",
+        "data": {
+          "redirect_uri": "Complete ms-app:// address after sign-in",
+          "update_interval": "Update interval (seconds)",
+          "keepalive_interval": "Session keepalive interval (seconds)",
+          "mode_smarttags": "SmartTag mode",
+          "mode_others": "Other devices mode (phone/watch/earbuds)"
+        }
+      },
+      "cookie": {
+        "title": "Cookie header compatibility mode",
+        "description": "1) Sign in at https://smartthingsfind.samsung.com\n2) DevTools (F12) → Network\n3) Select `chkLogin.do`\n4) Copy the complete `Cookie:` request header and paste it below.\n\nThis mode still requires a newly copied cookie when Samsung fully revokes the server session. Samsung Account authentication is recommended for unattended operation.\n\n**Mode**\n- Passive: read the cached server location\n- Active: request a location update first",
         "data": {
           "cookie": "Cookie header",
           "update_interval": "Update interval (seconds)",
-          "keepalive_interval": "KeepAlive interval (seconds)",
+          "keepalive_interval": "Session keepalive interval (seconds)",
           "mode_smarttags": "SmartTag mode",
           "mode_others": "Other devices mode (phone/watch/earbuds)"
         }
       }
     },
     "error": {
-      "invalid_auth": "Authentication failed. Cookie header is expired or invalid.",
-      "no_devices": "No devices found for this account.",
-      "cannot_connect": "Connection failed. Try again later.",
+      "invalid_auth": "Authentication failed. Use the new sign-in link again or verify the Cookie header.",
+      "no_devices": "No devices were found for this account.",
+      "cannot_connect": "Unable to connect to Samsung authentication or SmartThings Find. Try again later.",
       "unknown": "Unexpected error."
     },
     "abort": {
-      "reauth_successful": "Re-authentication successful",
+      "reauth_successful": "Re-authentication completed.",
+      "reconfigure_successful": "Authentication and settings were updated.",
       "already_configured": "SmartThings Find is already configured."
     }
   },
@@ -28,19 +47,19 @@
     "step": {
       "init": {
         "title": "SmartThings Find options",
-        "description": "Paste a new Cookie header to replace the session. Leave empty to keep the current cookie.\n\n**Mode**\n- Passive: read last cached server location\n- Active: request a location update first\n\nSmartTags and other devices are configured separately.",
+        "description": "Current authentication method: `{auth_method}`\n\nSamsung Account mode automatically rebuilds an expired web session. Cookie mode allows a replacement Cookie header; leave it empty to retain the current value.\n\nKeepalive calls use slight timing jitter around the configured interval. The default is 180 seconds.\n\n**Mode**\n- Passive: read the cached server location\n- Active: request a location update first",
         "data": {
           "cookie": "New Cookie header (optional)",
           "update_interval": "Update interval (seconds)",
-          "keepalive_interval": "KeepAlive interval (seconds)",
+          "keepalive_interval": "Session keepalive interval (seconds)",
           "mode_smarttags": "SmartTag mode",
           "mode_others": "Other devices mode (phone/watch/earbuds)"
         }
       }
     },
     "error": {
-      "invalid_auth": "Authentication failed. Cookie header is expired or invalid.",
-      "no_devices": "No devices found for this account.",
+      "invalid_auth": "Authentication failed. The Cookie header is expired or invalid.",
+      "no_devices": "No devices were found for this account.",
       "cannot_connect": "Connection failed. Try again later."
     }
   }

@@ -3,31 +3,64 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "Cookie-Header eingeben. (Bei Sitzungsablauf neuen Cookie einfügen)\n\n1) Bei https://smartthingsfind.samsung.com anmelden\n2) DevTools(F12) → Network\n3) chkLogin.do auswählen (bei Bedarf aktualisieren)\n4) Request Headers → Cookie: kopieren\n5) Unten einfügen",
+        "description": "Authentifizierungsmethode auswählen. **Samsung Account** wird empfohlen, da eine abgelaufene Web-Sitzung automatisch erneuert werden kann. Der manuell kopierte Cookie-Header bleibt als Kompatibilitätsmodus verfügbar.",
         "data": {
-          "cookie": "Cookie header"
+          "auth_method": "Authentifizierungsmethode"
+        }
+      },
+      "account": {
+        "title": "Samsung Account-Anmeldung",
+        "description": "1. [Samsung Account-Anmeldung öffnen]({login_url})\n2. Anmeldung und gegebenenfalls Zwei-Faktor-Authentifizierung abschließen.\n3. Die vollständige `ms-app://...` Adresse kopieren.\n4. Die Adresse unten einfügen.\n\nPasswort und zweiter Faktor werden nur von Samsung verarbeitet. Die erneuerbare Autorisierung wird privat unter Home Assistant `.storage` gespeichert.",
+        "data": {
+          "redirect_uri": "Vollständige ms-app:// Adresse",
+          "update_interval": "Aktualisierungsintervall (Sekunden)",
+          "keepalive_interval": "Sitzungsintervall (Sekunden)",
+          "mode_smarttags": "SmartTag-Modus",
+          "mode_others": "Modus für andere Geräte"
+        }
+      },
+      "cookie": {
+        "title": "Cookie-Header-Kompatibilitätsmodus",
+        "description": "Bei https://smartthingsfind.samsung.com anmelden, in den Entwicklertools `chkLogin.do` auswählen und den vollständigen `Cookie:` Request Header einfügen. Bei vollständigem serverseitigem Ablauf muss der Cookie erneut kopiert werden.",
+        "data": {
+          "cookie": "Cookie header",
+          "update_interval": "Aktualisierungsintervall (Sekunden)",
+          "keepalive_interval": "Sitzungsintervall (Sekunden)",
+          "mode_smarttags": "SmartTag-Modus",
+          "mode_others": "Modus für andere Geräte"
         }
       }
     },
     "error": {
-      "invalid_auth": "Authentifizierung fehlgeschlagen. Bitte den Cookie-Header überprüfen.",
+      "invalid_auth": "Authentifizierung fehlgeschlagen. Anmeldung wiederholen oder Cookie-Header prüfen.",
       "no_devices": "Keine Geräte im Konto gefunden.",
-      "cannot_connect": "Verbindung fehlgeschlagen. Bitte später erneut versuchen.",
+      "cannot_connect": "Verbindung zu Samsung oder SmartThings Find fehlgeschlagen.",
       "unknown": "Unerwarteter Fehler."
     },
     "abort": {
-      "reauth_successful": "Reauthentifizierung erfolgreich"
+      "reauth_successful": "Reauthentifizierung abgeschlossen.",
+      "reconfigure_successful": "Authentifizierung und Einstellungen wurden aktualisiert.",
+      "already_configured": "SmartThings Find ist bereits konfiguriert."
     }
   },
   "options": {
     "step": {
       "init": {
+        "title": "SmartThings Find-Einstellungen",
+        "description": "Aktuelle Authentifizierung: `{auth_method}`. Samsung Account erneuert abgelaufene Web-Sitzungen automatisch. Keepalive-Aufrufe werden leicht zeitlich variiert.",
         "data": {
+          "cookie": "Neuer Cookie header (optional)",
           "update_interval": "Aktualisierungsintervall (Sekunden)",
-          "active_mode_smarttags": "Aktiven Modus für SmartTags verwenden (kann Akkuverbrauch erhöhen).",
-          "active_mode_others": "Aktiven Modus für andere Geräte verwenden (hoher Akkuverbrauch)."
+          "keepalive_interval": "Sitzungsintervall (Sekunden)",
+          "mode_smarttags": "SmartTag-Modus",
+          "mode_others": "Modus für andere Geräte"
         }
       }
+    },
+    "error": {
+      "invalid_auth": "Authentifizierung fehlgeschlagen. Der Cookie-Header ist ungültig oder abgelaufen.",
+      "no_devices": "Keine Geräte im Konto gefunden.",
+      "cannot_connect": "Verbindung fehlgeschlagen. Bitte später erneut versuchen."
     }
   }
 }
