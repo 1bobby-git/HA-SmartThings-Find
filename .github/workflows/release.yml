@@ -111,4 +111,4 @@ jobs:
             "${asset}#Home Assistant 통합 설치 파일" \
             --target "${RELEASE_SHA}" \
             --title "SmartThings Find ${{ steps.release.outputs.tag }}" \
-            --notes "SmartThings Web과 통일된 로컬 브랜드 아이콘 및 라이트/다크 로고를 포함합니다. Home Assistant 2026.3 이상에서는 Brands Proxy API를 통해 로컬 자산이 기존 CDN 자산보다 우선 사용됩니다. 위치 조회 및 명령 동작 변경은 없습니다."
+            --notes "SmartThings Find 전용 로케이터 아이콘과 아이콘을 영문 워드마크 앞에 배치한 라이트/다크 가로 로고를 포함합니다. Home Assistant 2026.3 이상에서는 Brands Proxy API를 통해 로컬 자산이 기존 CDN 자산보다 우선 사용됩니다. 위치 조회 및 명령 동작 변경은 없습니다."
