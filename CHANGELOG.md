@@ -1,5 +1,18 @@
 # 변경 이력
 
+## 1.4.2 - 2026-09-04
+
+- 신규 설치, 재인증, 재구성에서 Samsung Account 인증 선택지와 `ms-app://` 콜백 입력 화면을 제거했습니다.
+- 모든 사용자 설정 흐름을 `smartthingsfind.samsung.com/chkLogin.do`의 Cookie header 방식으로 단일화했습니다.
+- v1.4.0/v1.4.1에서 Samsung Account 등록에 성공한 기존 항목은 저장된 장기 인증이 유효한 동안 런타임 호환을 유지합니다.
+- 기존 Samsung Account 항목이 재인증 또는 재구성되면 검증된 Cookie 방식으로 전환하고 이전 장기 인증 파일을 삭제합니다.
+- 더 이상 사용하지 않는 네이티브 앱 콜백 파서, 콜백 상수 및 신규 등록 메서드를 제거했습니다.
+- `account.samsung.com` 쿠키 이름이 포함된 입력이 SmartThings Find에서 거부되면 잘못된 쿠키 출처를 별도 오류로 안내합니다.
+- 삼성 계정 페이지의 `JSESSIONID`와 SmartThings Find의 `JSESSIONID`가 서로 다른 세션임을 설정 화면과 README에 명시했습니다.
+- 아이폰 Safari만으로는 요청 Cookie 헤더 전체를 일반적으로 추출할 수 없으므로 최초 설정에는 PC 브라우저가 필요함을 안내했습니다.
+- 효과 명령 인증 실패 로그에서 잘못된 “Samsung Account 재인증” 표현을 제거했습니다.
+- Cookie 단일 설정 표면, 기존 항목 런타임 호환, 계정 쿠키 감지 및 번역 구조를 검증하는 회귀 테스트를 추가했습니다.
+
 ## 1.4.1 - 2026-09-04
 
 - 일반 PC에서 재현 가능한 Cookie header 방식을 신규 설치 기본값으로 복원했습니다.
