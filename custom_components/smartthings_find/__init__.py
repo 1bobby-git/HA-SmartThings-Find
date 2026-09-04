@@ -4,32 +4,37 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 
+from .account_auth import SamsungAccountAuth
+from .auth_manager import SmartThingsFindAuthManager
 from .const import (
-    DOMAIN,
+    AUTH_METHOD_ACCOUNT,
     CONF_ACTIVE_MODE_OTHERS,
     CONF_ACTIVE_MODE_OTHERS_DEFAULT,
     CONF_ACTIVE_MODE_SMARTTAGS,
     CONF_ACTIVE_MODE_SMARTTAGS_DEFAULT,
+    CONF_AUTH_METHOD,
     CONF_KEEPALIVE_INTERVAL,
     CONF_KEEPALIVE_INTERVAL_DEFAULT,
     CONF_UPDATE_INTERVAL,
     CONF_UPDATE_INTERVAL_DEFAULT,
+    DATA_AUTH_MANAGER,
     DATA_COORDINATOR,
     DATA_DEVICES,
     DATA_SESSION,
+    DOMAIN,
 )
 from .coordinator import SmartThingsFindCoordinator
-from .device_inventory import get_devices, migrate_registered_identifiers
-from .session_store import async_load_cookie_line, persist_cookie_to_store
+from .device_inventory import migrate_registered_identifiers
+from .session_store import async_remove_session_store
 from .utils import (
-    apply_cookies_to_session,
     auth_failure_is_persistent,
     clear_auth_failure,
-    fetch_csrf,
     make_session,
-    parse_cookie_header,
 )
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS = [Platform.DEVICE_TRACKER, Platform.SENSOR, Platform.BUTTON]
 
@@ -40,25 +45,14 @@ async def async_setup(hass: HomeAssistant, _config) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload after a user changes options or replaces the configured cookie."""
+    """Reload after a user changes options or authentication settings."""
     await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up one SmartThings Find account."""
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN].setdefault(entry.entry_id, {})
-
-    cookie_line = await async_load_cookie_line(hass, entry)
-    if not cookie_line:
-        raise ConfigEntryAuthFailed("missing_cookie")
-
-    cookies = parse_cookie_header(cookie_line)
-    if not cookies:
-        raise ConfigEntryAuthFailed("invalid_cookie")
-
-    session = make_session(hass)
-    apply_cookies_to_session(session, cookies)
+    runtime = hass.data[DOMAIN].setdefault(entry.entry_id, {})
 
     active_smarttags = entry.options.get(
         CONF_ACTIVE_MODE_SMARTTAGS,
@@ -89,34 +83,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except (TypeError, ValueError):
         keepalive_interval_s = int(CONF_KEEPALIVE_INTERVAL_DEFAULT)
 
-    hass.data[DOMAIN][entry.entry_id].update(
+    runtime.update(
         {
             CONF_ACTIVE_MODE_SMARTTAGS: bool(active_smarttags),
             CONF_ACTIVE_MODE_OTHERS: bool(active_others),
         }
     )
 
-    try:
-        await fetch_csrf(hass, session, entry.entry_id)
-        clear_auth_failure(hass, entry.entry_id)
-        await persist_cookie_to_store(hass, entry, session)
+    session = make_session(hass)
+    auth_manager = SmartThingsFindAuthManager(hass, entry, session)
+    coordinator = None
 
-        devices = await get_devices(hass, session, entry.entry_id)
-        await persist_cookie_to_store(hass, entry, session)
+    try:
+        await auth_manager.async_initialize()
+        devices = await auth_manager.async_get_devices()
 
         coordinator = SmartThingsFindCoordinator(
             hass=hass,
             entry=entry,
             session=session,
+            auth_manager=auth_manager,
             devices=devices,
             update_interval_s=update_interval_s,
             keepalive_interval_s=keepalive_interval_s,
         )
         await coordinator.async_config_entry_first_refresh()
 
-        hass.data[DOMAIN][entry.entry_id].update(
+        runtime.update(
             {
                 DATA_SESSION: session,
+                DATA_AUTH_MANAGER: auth_manager,
                 DATA_COORDINATOR: coordinator,
                 DATA_DEVICES: devices,
             }
@@ -125,24 +121,50 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         migrate_registered_identifiers(hass, entry.entry_id, devices)
         entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+        clear_auth_failure(hass, entry.entry_id)
         return True
 
     except ConfigEntryAuthFailed as err:
+        if coordinator is not None:
+            try:
+                await coordinator.async_shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await auth_manager.async_shutdown()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             await session.close()
         except Exception:  # noqa: BLE001
             pass
+
+        for key in (DATA_SESSION, DATA_AUTH_MANAGER, DATA_COORDINATOR, DATA_DEVICES):
+            runtime.pop(key, None)
+
         if not auth_failure_is_persistent(hass, entry.entry_id):
             raise ConfigEntryNotReady(
-                "SmartThings Find temporarily rejected the saved session; "
-                "retrying before reauth"
+                "SmartThings Find authentication is temporarily unavailable; "
+                "automatic session recovery will retry before reauthentication"
             ) from err
         raise
+
     except Exception as err:
+        if coordinator is not None:
+            try:
+                await coordinator.async_shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await auth_manager.async_shutdown()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             await session.close()
         except Exception:  # noqa: BLE001
             pass
+        for key in (DATA_SESSION, DATA_AUTH_MANAGER, DATA_COORDINATOR, DATA_DEVICES):
+            runtime.pop(key, None)
         raise ConfigEntryNotReady(f"SmartThings Find setup failed: {err}") from err
 
 
@@ -156,8 +178,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if coordinator:
             await coordinator.async_shutdown()
 
+        auth_manager = data.get(DATA_AUTH_MANAGER)
+        if auth_manager:
+            await auth_manager.async_shutdown()
+
         session = data.get(DATA_SESSION)
         if session:
             await session.close()
 
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove private credentials when the user deletes the integration."""
+    await async_remove_session_store(hass, entry.entry_id)
+    if entry.data.get(CONF_AUTH_METHOD) == AUTH_METHOD_ACCOUNT:
+        await SamsungAccountAuth(hass).async_remove()
+    hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)

@@ -28,6 +28,10 @@ LOCATION_POLL_DELAYS: Final[tuple[int, ...]] = (15, 30, 45)
 # ----------------------------
 # Config / Options keys
 # ----------------------------
+CONF_AUTH_METHOD: Final = "auth_method"
+AUTH_METHOD_ACCOUNT: Final = "samsung_account"
+AUTH_METHOD_COOKIE: Final = "cookie"
+CONF_REDIRECT_URI: Final = "redirect_uri"
 CONF_COOKIE: Final = "cookie"
 
 # Legacy keys (keep for backward compatibility)
@@ -37,12 +41,14 @@ CONF_JSESSIONID: Final = "jsessionid"
 CONF_UPDATE_INTERVAL: Final = "update_interval"
 CONF_UPDATE_INTERVAL_DEFAULT: Final = 120  # seconds
 
-# ✅ NEW: keepalive interval (seconds)
+# A shorter interval helps idle expiry while the randomized scheduler avoids
+# repeatedly hitting Samsung at an exact machine-like cadence.
 CONF_KEEPALIVE_INTERVAL: Final = "keepalive_interval"
-CONF_KEEPALIVE_INTERVAL_DEFAULT: Final = 300  # seconds (5 min)
+CONF_KEEPALIVE_INTERVAL_DEFAULT: Final = 180  # seconds (3 min)
+KEEPALIVE_JITTER_RATIO: Final = 0.12
 
-# A single STF "Logout" body can be transient. Retry quickly, then keep the
-# entry loaded/unavailable before asking the user to replace a still-valid cookie.
+# A single STF "Logout" body can be transient. The auth manager first refreshes
+# CSRF and then rebuilds the web session when Samsung Account auth is available.
 AUTH_RETRY_DELAYS: Final[tuple[int, ...]] = (2, 5, 15)
 AUTH_FAILURE_GRACE_PERIOD: Final = 30 * 60
 
@@ -61,14 +67,15 @@ CONF_ST_IDENTIFIER: Final = "st_identifier"
 # hass.data keys
 # ----------------------------
 DATA_SESSION: Final = "session"
+DATA_AUTH_MANAGER: Final = "auth_manager"
 DATA_COORDINATOR: Final = "coordinator"
 DATA_DEVICES: Final = "devices"
 
-# ✅ NEW: keepalive unsubscribe handle key
+# Legacy key retained for compatibility with older runtime data.
 DATA_KEEPALIVE_UNSUB: Final = "keepalive_unsub"
 
 # ----------------------------
-# Battery mapping (서버 응답 문자열 -> 퍼센트)
+# Battery mapping (server response string -> percent)
 # ----------------------------
 BATTERY_LEVELS: Final[dict[str, int]] = {
     "FULL": 100,
@@ -83,10 +90,8 @@ BATTERY_LEVELS: Final[dict[str, int]] = {
 BATTERY_LEVEL_MAP: Final[dict[str, int]] = dict(BATTERY_LEVELS)
 
 # ----------------------------
-# SmartThings Find operation codes (최소 사용만 유지)
+# SmartThings Find operation codes
 # ----------------------------
 OP_RING: Final = "RING"
-
-# check / location update
 OP_CHECK_CONNECTION: Final = "CHECK_CONNECTION"
 OP_CHECK_CONNECTION_WITH_LOCATION: Final = "CHECK_CONNECTION_WITH_LOCATION"

@@ -111,4 +111,4 @@ jobs:
             "${asset}#Home Assistant 통합 설치 파일" \
             --target "${RELEASE_SHA}" \
             --title "SmartThings Find ${{ steps.release.outputs.tag }}" \
-            --notes "SmartThings Find 전용 로케이터 아이콘과 아이콘을 영문 워드마크 앞에 배치한 라이트/다크 가로 로고를 포함합니다. Home Assistant 2026.3 이상에서는 Brands Proxy API를 통해 로컬 자산이 기존 CDN 자산보다 우선 사용됩니다. 위치 조회 및 명령 동작 변경은 없습니다."
+            --notes "Samsung Account 지속 인증을 추가했습니다. 웹 JSESSIONID 또는 CSRF가 만료되면 저장된 장기 인증과 회전 토큰으로 새 웹 세션을 자동 발급하며, 기존 Cookie header 방식은 호환 모드로 유지됩니다. 인증 요청 직렬화, 현재 쿠키 jar 완전 교체, 180초 기본 KeepAlive와 시간 분산, 효과 명령 중복 재전송 방지도 함께 적용했습니다."
