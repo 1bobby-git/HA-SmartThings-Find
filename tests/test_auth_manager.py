@@ -25,7 +25,11 @@ def _load_auth_manager_module():
     class ConfigEntryAuthFailed(Exception):
         pass
 
+    class HomeAssistantError(Exception):
+        pass
+
     exceptions.ConfigEntryAuthFailed = ConfigEntryAuthFailed
+    exceptions.HomeAssistantError = HomeAssistantError
     sys.modules["homeassistant.config_entries"] = config_entries
     sys.modules["homeassistant.core"] = core
     sys.modules["homeassistant.exceptions"] = exceptions
