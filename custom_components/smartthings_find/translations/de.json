@@ -3,16 +3,16 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "Authentifizierungsmethode auswählen. **Samsung Account** wird empfohlen, da eine abgelaufene Web-Sitzung automatisch erneuert werden kann. Der manuell kopierte Cookie-Header bleibt als Kompatibilitätsmodus verfügbar.",
+        "description": "Die Standardmethode für einen normalen Desktop-PC ist **Cookie header**. Speicherung rotierter Cookies, CSRF-Wiederherstellung und Keepalive bleiben aktiv. **Samsung Account** ist nur eine experimentelle Option für Umgebungen, die den vollständigen `ms-app://`-Callback tatsächlich anzeigen.",
         "data": {
           "auth_method": "Authentifizierungsmethode"
         }
       },
       "account": {
-        "title": "Samsung Account-Anmeldung",
-        "description": "1. [Samsung Account-Anmeldung öffnen]({login_url})\n2. Anmeldung und gegebenenfalls Zwei-Faktor-Authentifizierung abschließen.\n3. Die vollständige `ms-app://...` Adresse kopieren.\n4. Die Adresse unten einfügen.\n\nPasswort und zweiter Faktor werden nur von Samsung verarbeitet. Die erneuerbare Autorisierung wird privat unter Home Assistant `.storage` gespeichert.",
+        "title": "Samsung Account-Anmeldung (experimentell)",
+        "description": "Diese Methode funktioniert auf einem normalen Desktop-PC nicht zuverlässig. Samsungs native Anmeldung verwendet einen festen `ms-app://`-Callback; Browser können stattdessen nur `{completion_url}` ohne Authentifizierungsdaten anzeigen.\n\n1. [Samsung Account-Anmeldung öffnen]({login_url})\n2. Anmeldung und gegebenenfalls Zwei-Faktor-Authentifizierung abschließen.\n3. Nur einen vollständigen `ms-app://...?state=...`-Callback, eine Fehlermeldung mit diesem Callback oder eine parametrisierte `signInComplete`-Adresse einfügen.\n4. Endet die Adresse bei `{completion_url}`, kann sie nicht verwendet werden. Zurückgehen und **Cookie header** auswählen.\n\nHome Assistant kann die Sitzung eines anderen PC-Browsers oder fehlende Callback-Werte nicht auslesen. Eine automatische Web-Sitzungserneuerung ist erst nach erfolgreicher Ersteinrichtung mit einem vollständigen Callback möglich.",
         "data": {
-          "redirect_uri": "Vollständige ms-app:// Adresse",
+          "redirect_uri": "Vollständiger Anmelde-Callback (reine signInComplete-Adresse reicht nicht)",
           "update_interval": "Aktualisierungsintervall (Sekunden)",
           "keepalive_interval": "Sitzungsintervall (Sekunden)",
           "mode_smarttags": "SmartTag-Modus",
@@ -20,8 +20,8 @@
         }
       },
       "cookie": {
-        "title": "Cookie-Header-Kompatibilitätsmodus",
-        "description": "Bei {stf_url} anmelden, in den Entwicklertools `chkLogin.do` auswählen und den vollständigen `Cookie:` Request Header einfügen. Bei vollständigem serverseitigem Ablauf muss der Cookie erneut kopiert werden.",
+        "title": "Cookie header (Standard)",
+        "description": "Bei {stf_url} anmelden, in den Entwicklertools `chkLogin.do` auswählen und den vollständigen `Cookie:` Request Header einfügen. Dies ist die reproduzierbare Standardmethode auf einem normalen Desktop-PC. Rotierte Cookies, CSRF-Wiederherstellung und Keepalive bleiben aktiv. Wird die serverseitige Sitzung vollständig widerrufen, muss ein neuer Cookie-Header eingegeben werden.",
         "data": {
           "cookie": "Cookie header",
           "update_interval": "Aktualisierungsintervall (Sekunden)",
@@ -32,7 +32,9 @@
       }
     },
     "error": {
-      "invalid_auth": "Authentifizierung fehlgeschlagen. Anmeldung wiederholen oder Cookie-Header prüfen.",
+      "callback_unavailable": "Die angegebene signInComplete-Adresse enthält kein Authentifizierungsergebnis. Zurückgehen und Cookie header auswählen.",
+      "invalid_callback": "Der Callback wird nicht unterstützt oder enthält nicht alle erforderlichen Werte wie state und code. Anmeldung neu starten und den vollständigen Callback verwenden.",
+      "invalid_auth": "Authentifizierung fehlgeschlagen. Anmeldung neu starten oder Cookie-Header prüfen.",
       "no_devices": "Keine Geräte im Konto gefunden.",
       "cannot_connect": "Verbindung zu Samsung oder SmartThings Find fehlgeschlagen.",
       "unknown": "Unerwarteter Fehler."
@@ -47,7 +49,7 @@
     "step": {
       "init": {
         "title": "SmartThings Find-Einstellungen",
-        "description": "Aktuelle Authentifizierung: `{auth_method}`. Samsung Account erneuert abgelaufene Web-Sitzungen automatisch. Keepalive-Aufrufe werden leicht zeitlich variiert.",
+        "description": "Aktuelle Authentifizierung: `{auth_method}`. Im Cookie-Modus kann ein neuer Cookie-Header eingegeben werden. Samsung Account kann bei bereits erfolgreich eingerichteten Einträgen eine abgelaufene Web-Sitzung erneuern. Keepalive-Aufrufe werden zeitlich leicht variiert.",
         "data": {
           "cookie": "Neuer Cookie header (optional)",
           "update_interval": "Aktualisierungsintervall (Sekunden)",
