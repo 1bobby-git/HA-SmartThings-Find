@@ -109,7 +109,7 @@ class _STFOperationButton(ButtonEntity):
         except ConfigEntryAuthFailed:
             if auth_failure_is_persistent(self.hass, self._entry_id):
                 _LOGGER.warning(
-                    "Operation %s requires renewed Samsung Account authentication",
+                    "Operation %s requires renewed SmartThings Find authentication",
                     operation,
                 )
                 self._start_reauth()

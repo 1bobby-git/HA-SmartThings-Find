@@ -1,21 +1,38 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+| Version | Security updates |
+| --- | --- |
+| 1.4.x | Supported |
+| 1.3.x and older | Not supported |
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+Install the latest release before reporting a security issue.
 
-## Reporting a Vulnerability
+## Credentials and sensitive data
 
-Use this section to tell people how to report a vulnerability.
+Never include any of the following in an issue, discussion, log excerpt, screenshot, or chat message:
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+- SmartThings Find `Cookie:` headers
+- `JSESSIONID`, `WMONID`, CSRF values, or other session cookies
+- cookies copied from `account.samsung.com`
+- files under `.storage/smartthings_find_auth`
+- Home Assistant backups containing those files
+
+A cookie copied from `account.samsung.com` is not a supported SmartThings Find credential and may expose a broader Samsung Account session. This integration accepts only a Cookie header validated against `smartthingsfind.samsung.com`.
+
+If a credential has been exposed, sign out of the Samsung Account on all devices, clear Samsung Account and SmartThings Find browser data, then create a new SmartThings Find session before updating the integration.
+
+## Reporting a vulnerability
+
+Use GitHub's private **Report a vulnerability** option when it is available for this repository. Otherwise, open a public issue containing only sanitized reproduction steps and request a private contact channel.
+
+Include:
+
+- affected integration version
+- Home Assistant version
+- minimal sanitized reproduction steps
+- expected and actual behavior
+- whether the issue affects confidentiality, integrity, or availability
+
+Do not send live credentials as proof. Reports that require a real session can use redacted names and synthetic values.

@@ -19,50 +19,42 @@ Samsung **SmartThings Find**의 비공식 웹 기능을 Home Assistant에서 사
 
 > ⚠️ 공식 API가 아닌 역공학 기반 통합입니다. 삼성 웹·인증 규격이 변경되면 동작이 달라질 수 있습니다.
 
-## v1.4.1 인증 경로 현실화
+## v1.4.2 인증 방식 단일화
 
-v1.4.0에서 Samsung Account 지속 인증을 신규 설치 기본값으로 제공했지만, 최초 로그인은 삼성 네이티브 앱용 고정 `ms-app://` 콜백이 필요합니다. Chrome·Edge 같은 일반 PC 브라우저는 이 전체 콜백을 사용자에게 보여주지 않고 다음 완료 페이지만 표시할 수 있습니다.
+신규 설치, 재인증, 재구성에서 제공하는 인증 방식은 **SmartThings Find Cookie header 하나뿐입니다.**
+
+이전에 제공했던 Samsung Account 인증은 삼성 네이티브 앱용 고정 `ms-app://` 콜백이 필요합니다. 일반 PC 브라우저와 아이폰 Safari에서는 전체 콜백을 안정적으로 받을 수 없으며, 다음 완료 주소만으로는 인증에 필요한 값을 얻을 수 없습니다.
 
 ```text
 https://account.samsung.com/accounts/ANDROIDSDK/signInComplete
 ```
 
-이 주소만으로는 인증할 수 없습니다. 실제 교환에 필요한 암호화된 `state`, `code`, `auth_server_url`, `retValue`가 없으며 Home Assistant가 다른 PC 브라우저의 세션에서 누락된 값을 가져올 수도 없습니다.
+따라서 일반 사용자가 완료할 수 없는 Samsung Account 등록 화면과 콜백 처리 코드를 제거했습니다.
 
-따라서 v1.4.1부터 인증 방식을 다음처럼 정리했습니다.
+- 신규 설치: SmartThings Find Cookie 입력 화면으로 바로 이동
+- 재인증: 새 SmartThings Find Cookie 입력
+- 재구성: 새 SmartThings Find Cookie 입력 후 설정 저장
+- 기존 Samsung Account 등록 성공 항목: 저장된 인증이 유효한 동안만 런타임 호환 유지
+- 기존 항목이 재인증 또는 재구성되면 Cookie 방식으로 전환하고 이전 장기 인증 파일 삭제
 
-- **Cookie header**: 신규 설치 기본값이자 일반 PC 권장 방식
-- **Samsung Account**: 전체 콜백을 실제로 얻을 수 있는 환경에서만 사용하는 실험적 고급 방식
-- 기존에 Samsung Account 등록을 완료한 구성은 그대로 유지되며 자동 웹 세션 재발급 기능도 계속 동작
-- 기본 `signInComplete` 주소만 붙여넣으면 일반 인증 실패가 아니라 사용 불가능한 이유를 정확히 안내
+### 삼성 계정 페이지 쿠키는 사용할 수 없음
 
-Cookie 방식에도 서버 회전 쿠키 저장, CSRF 복구, 요청 직렬화, 180초 기본 KeepAlive 및 시간 분산이 그대로 적용됩니다. 삼성 서버가 세션 자체를 완전히 폐기한 경우에만 새 Cookie header를 다시 입력해야 합니다.
-
-### 선택적 Samsung Account 지속 인증
-
-전체 콜백으로 최초 등록에 성공한 경우에는 다음 인증 체인을 사용합니다.
+`account.samsung.com`에서 생성된 다음과 같은 쿠키는 SmartThings Find 인증 쿠키가 아닙니다.
 
 ```text
-Samsung Account 로그인 1회
-        ↓
-장기 master authorization 비공개 저장
-        ↓
-회전 access / refresh token 관리
-        ↓
-현재 JSESSIONID 검증
-        ↓ 만료 시
-새 인증 코드 + 서버 state로 JSESSIONID 자동 재발급
+G_ENABLED_IDPS
+sa_did
+sa_did_temp
+sa_trace
+sa_analytics_sid
+USAWSWIPSESSIONID
+stk
+account.samsung.com의 JSESSIONID
 ```
 
-추가 보호 조치도 함께 적용됩니다.
+같은 `JSESSIONID` 이름이라도 생성한 도메인이 다르면 서로 다른 세션입니다. 이 통합에는 반드시 **`smartthingsfind.samsung.com`의 `chkLogin.do` 요청에서 복사한 Cookie 헤더**를 입력해야 합니다.
 
-- 인증 요청을 config entry별 잠금으로 직렬화해 KeepAlive·폴링·버튼 요청의 충돌 방지
-- 인증 실패 시 기존 CSRF 폐기 → 새 CSRF 발급 → Samsung Account 구성인 경우 필요 시 전체 웹 세션 재발급
-- 서버가 삭제한 쿠키를 이전 저장값에서 되살리지 않고 현재 쿠키 jar로 완전 교체
-- 기본 KeepAlive 180초 및 ±12% 시간 분산
-- 순수 읽기 요청만 인증 복구 후 제한적으로 재시도
-- 액티브 위치 폴링, Ring, 수동 위치 갱신처럼 기기를 깨우거나 동작시키는 요청은 전송 후 자동 재실행하지 않음
-- 쿠키·토큰·로그인 콜백 원문을 로그에 남기지 않음
+삼성 계정 페이지 쿠키가 섞인 입력이 SmartThings Find에서 거부되면, 일반 인증 오류 대신 잘못된 쿠키 출처를 안내합니다. 쿠키 원문은 로그에 기록하지 않습니다.
 
 ---
 
@@ -98,82 +90,84 @@ Samsung Account 로그인 1회
 
 [![Open your Home Assistant instance and start setting up the integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=smartthings_find)
 
-### 방법 1. Cookie header — 기본·일반 PC 권장
+### SmartThings Find Cookie header 추출
 
-1. 브라우저에서 `https://smartthingsfind.samsung.com/` 로그인
+1. PC 브라우저에서 `https://smartthingsfind.samsung.com/` 로그인
 2. 개발자도구(F12) → **Network**
-3. 새로고침 후 **`chkLogin.do`** 선택
-4. **Request Headers → `Cookie:`** 전체 줄 복사
-5. 통합에서 **Cookie header (기본·일반 PC 권장)** 선택 후 붙여넣기
+3. 페이지 새로고침
+4. 요청 목록에서 **`chkLogin.do`** 선택
+5. **Request Headers → `Cookie:`** 전체 줄 복사
+6. Home Assistant의 SmartThings Find 설정 화면에 붙여넣기
 
 ![Cookie header example](media/cookie.png)
 
-이 방식은 다음 세션 보호를 사용합니다.
+다음처럼 `Cookie:` 접두어를 포함해도 되고, 세미콜론으로 연결된 쿠키 값만 입력해도 됩니다.
+
+```text
+Cookie: JSESSIONID=...; WMONID=...; ...
+```
+
+`JSESSIONID` 하나만 임의로 복사하지 말고 `chkLogin.do` 요청의 전체 Cookie 헤더를 사용하세요.
+
+### 아이폰 사용자
+
+삼성 계정 로그인 자체는 아이폰에서도 가능하지만, **아이폰 Safari만으로 요청 Cookie 헤더 전체를 일반적으로 추출할 수는 없습니다.** 최초 설정은 PC의 Chrome, Edge 또는 Firefox에서 진행해야 합니다. 별도의 Android 앱, Windows Galaxy Account 앱 또는 `ms-app://` 콜백 추출은 요구하지 않습니다.
+
+### 세션 보호
+
+Cookie 방식에도 다음 보호 조치가 적용됩니다.
 
 - 응답에서 삼성 서버가 회전시킨 쿠키를 Home Assistant 비공개 저장소에 즉시 반영
-- `Logout`, `fail`, HTTP 401/403 발생 시 CSRF를 폐기하고 현재 세션을 다시 검증
-- KeepAlive, 일반 폴링, 버튼 요청이 동시에 쿠키·CSRF를 바꾸지 않도록 직렬화
-- KeepAlive 호출 시점을 설정값 기준 약 ±12%로 분산
-- 이전 저장 쿠키와 무조건 병합하지 않고 현재 서버 쿠키 jar를 권위 있는 값으로 저장
+- `Logout`, `fail`, HTTP 401/403 발생 시 CSRF 폐기 후 현재 세션 재검증
+- KeepAlive, 일반 폴링, 버튼 요청의 쿠키·CSRF 변경 직렬화
+- 기본 KeepAlive 180초 및 호출 시점 ±12% 분산
+- 서버가 삭제한 쿠키를 이전 저장값에서 되살리지 않고 현재 쿠키 jar를 권위 있는 값으로 저장
+- 순수 읽기 요청만 인증 복구 후 제한적으로 재시도
+- Ring, 위치 갱신 등 효과 명령은 중복 실행 방지를 위해 자동 재전송하지 않음
+- 쿠키와 인증정보 원문을 로그에 기록하지 않음
 
-삼성 서버가 웹 세션을 완전히 취소한 경우에는 브라우저에서 새 Cookie header를 복사해 **구성** 화면에 입력해야 합니다. 브라우저 쿠키만으로 서버가 폐기한 세션을 새로 발급하는 것은 불가능합니다.
+삼성 서버가 웹 세션 자체를 완전히 취소하면 브라우저에서 새 Cookie header를 복사해 재인증해야 합니다. 브라우저 쿠키만으로 서버가 폐기한 세션을 새로 발급할 수는 없습니다.
 
-### 방법 2. Samsung Account — 실험적 고급 방식
-
-이 방식은 신규 설치 기본값이 아니며 일반 PC에서 동작을 보장하지 않습니다. 다음 중 하나를 실제로 얻을 수 있는 환경에서만 사용하세요.
-
-- 인증 매개변수가 포함된 전체 `ms-app://...` 콜백
-- 전체 `ms-app://...` 콜백이 포함된 브라우저 또는 운영체제 오류 문구
-- `state`, `code`, `auth_server_url`, `retValue`가 모두 포함된 `signInComplete` URL 또는 매개변수 블록
-
-설정 순서:
-
-1. 통합 추가 화면에서 **Samsung Account (실험적·전체 콜백 필요)** 선택
-2. 화면에 표시된 Samsung Account 로그인 링크 열기
-3. 삼성 로그인 및 2단계 인증 완료
-4. 위 조건을 충족하는 전체 콜백을 확인할 수 있을 때만 Home Assistant에 붙여넣기
-
-다음 주소만 보인다면 이 방식을 완료할 수 없습니다.
-
-```text
-https://account.samsung.com/accounts/ANDROIDSDK/signInComplete
-```
-
-그 경우 뒤로 이동해 **Cookie header** 방식을 사용하세요. 개발자도구에 존재하지 않는 `ms-app://` 이동을 찾으라고 안내하거나, 완료 페이지 주소만으로 인증된다고 처리하지 않습니다.
-
-로그인은 삼성 페이지에서 처리됩니다. 이 통합은 삼성 계정 비밀번호나 2단계 인증 값을 받거나 저장하지 않습니다.
-
-로그인 완료 후 다음 파일들이 Home Assistant `.storage` 아래에 생성됩니다.
-
-```text
-smartthings_find_auth/account.master.json
-smartthings_find_auth/account.state.json
-smartthings_find_auth/account.pending.json   # 로그인 중에만 사용
-```
-
-`master.json`은 웹 세션과 서비스 토큰을 다시 발급할 수 있는 중요한 인증정보입니다. Home Assistant 백업에는 포함될 수 있으므로 백업 파일도 계정 비밀번호와 동일한 수준으로 보호해야 합니다. 통합을 삭제하면 해당 인증 상태와 저장된 세션 쿠키도 제거됩니다.
-
-> Cookie header, 전체 로그인 콜백, `.storage` 인증 파일을 로그·이슈·채팅에 공유하지 마세요.
+> Cookie header와 Home Assistant `.storage` 파일을 이슈, 로그, 채팅에 공유하지 마세요.
 
 ---
 
-## 자동 세션 복구 순서
+## 기존 Samsung Account 항목 호환
 
-Samsung Account 인증을 이미 정상 등록한 구성에서 `Logout`, `fail`, HTTP 401/403이 발생하면 다음 순서로 복구합니다.
+v1.4.0 또는 v1.4.1에서 전체 콜백 등록에 성공한 기존 항목은 자동으로 삭제하거나 변경하지 않습니다.
+
+저장된 master authorization이 유효한 동안에는 기존 로직으로 만료된 SmartThings Find `JSESSIONID`를 다시 발급할 수 있습니다. 다만 이 기능은 **기존 항목의 런타임 호환 전용**이며 다음 제한이 있습니다.
+
+- 신규 Samsung Account 등록 화면 없음
+- `ms-app://` 콜백 입력 화면 없음
+- Samsung Account 재인증 없음
+- 통합의 **재구성** 또는 재인증 요청 시 SmartThings Find Cookie 입력 화면으로 이동
+- Cookie 검증 성공 후 기존 장기 인증 파일 삭제 및 Cookie 방식으로 전환
+
+기존 항목이 정상 작동 중이라면 즉시 전환할 필요는 없습니다. 장기 인증이 서버에서 취소되었거나 사용자가 직접 Cookie 방식으로 바꾸려는 경우 재구성을 실행하세요.
+
+---
+
+## 인증 복구 순서
+
+### Cookie 방식
 
 ```text
-1. 캐시된 CSRF 제거
-2. 현재 쿠키로 chkLogin.do 재검증 및 새 CSRF 발급
-3. 동일 읽기 요청 1회 재시도
-4. 계속 실패하면 Samsung master authorization으로 새 JSESSIONID 발급
-5. 쿠키 jar 전체 교체 후 새 CSRF 발급
-6. 읽기 요청 1회 재시도
-7. master authorization까지 거부될 때만 Home Assistant 재인증 시작
+1. 저장된 최신 Cookie snapshot 복원
+2. chkLogin.do로 로그인 상태와 CSRF 확인
+3. 실패 시 CSRF 폐기 후 현재 세션 재검증
+4. 읽기 요청만 제한적으로 재시도
+5. 서버가 세션을 폐기한 경우 재인증 요청
 ```
 
-삼성 계정에서 직접 로그아웃했거나 보안 설정을 변경했거나 삼성 서버가 master authorization을 취소한 경우에는 다시 로그인해야 합니다. 영구 인증을 보장하는 방식은 아니지만, 최초 등록이 완료된 환경에서는 일반적인 웹 쿠키 만료를 사용자 개입 없이 복구하도록 구성되어 있습니다.
+### 기존 Samsung Account 호환 항목
 
-Cookie 방식에서는 1~3단계와 회전 쿠키 저장을 수행하지만 새 웹 세션을 발급할 장기 인증정보가 없으므로 서버가 세션을 완전히 취소하면 새 Cookie header가 필요합니다.
+```text
+1. 저장된 웹 Cookie 검증
+2. 실패 시 저장된 장기 인증으로 새 JSESSIONID 발급 시도
+3. 새 Cookie와 CSRF 저장
+4. 장기 인증도 거부되면 Cookie 방식 재인증 요청
+```
 
 ---
 
@@ -183,10 +177,10 @@ Cookie 방식에서는 1~3단계와 회전 쿠키 저장을 수행하지만 새 
 
 - `chkLogin.do`로 로그인 상태와 CSRF 확인
 - 기기 목록 엔드포인트 호출로 실제 세션 활동 유지
-- 응답에서 회전된 쿠키를 즉시 비공개 저장소에 반영
-- KeepAlive와 일반 폴링, 버튼 명령이 동시에 인증 상태를 변경하지 않도록 하나의 잠금으로 직렬화
+- 응답에서 회전된 쿠키를 비공개 저장소에 반영
+- KeepAlive, 폴링, 버튼 명령의 인증 상태 변경을 하나의 잠금으로 직렬화
 
-옵션에서 60~86400초 사이로 변경할 수 있습니다. 너무 짧게 설정하면 삼성 서버 요청량이 불필요하게 증가하므로 기본값부터 사용하는 것을 권장합니다.
+옵션에서 60~86400초 사이로 변경할 수 있습니다. 너무 짧게 설정하면 삼성 서버 요청량만 늘어날 수 있으므로 기본값부터 사용하세요.
 
 ---
 
@@ -209,29 +203,26 @@ Home Assistant → 설정 → 디바이스 및 서비스 → SmartThings Find �
 - **기타 기기 모드**: Passive / Active
 - Cookie 방식에서는 새 Cookie header를 선택적으로 교체 가능
 
-인증 방법 자체를 변경하려면 통합의 **재구성**을 실행합니다. 기존 Samsung Account 구성은 업데이트 후에도 자동으로 Cookie 방식으로 바뀌지 않습니다.
+기존 Samsung Account 호환 항목의 옵션 화면에서는 동작 설정만 변경할 수 있습니다. 인증 방식을 Cookie로 전환하려면 통합의 **재구성**을 실행하세요.
 
 ---
 
 ## Troubleshooting
 
-### Samsung Account 로그인 후 기본 `signInComplete` 주소만 표시됨
+### 삼성 계정 페이지 쿠키를 입력했음
 
-다음 주소만 표시되면 인증 결과가 노출되지 않은 것입니다.
+`account.samsung.com`의 쿠키는 사용할 수 없습니다. 노출된 계정 쿠키는 폐기하고, SmartThings Find 웹사이트에 다시 로그인한 뒤 `smartthingsfind.samsung.com/chkLogin.do` 요청의 Cookie 헤더를 복사하세요.
 
-```text
-https://account.samsung.com/accounts/ANDROIDSDK/signInComplete
-```
+### `signInComplete` 주소만 보임
 
-이 값은 전체 콜백이 아니며 붙여넣어도 인증할 수 없습니다. 통합의 이전 화면으로 돌아가 **Cookie header** 방식을 선택하세요. Home Assistant 서버에서 별도 PC 브라우저의 로그인 세션이나 누락된 콜백 값을 복구하는 우회 처리는 제공하지 않습니다.
+해당 주소를 입력할 필요가 없습니다. Samsung Account 콜백 방식은 신규 설정에서 제거되었습니다. SmartThings Find Cookie 방식으로 설정하세요.
 
-### 자동 복구 후에도 계속 Unavailable
+### 계속 Unavailable
 
-1. Home Assistant 로그에서 `automatic session recovery` 또는 `starting reauth` 확인
-2. 삼성 계정에서 전체 로그아웃·비밀번호 변경·보안 설정 변경 여부 확인
-3. Cookie 방식이면 새 Cookie header 입력
-4. 기존 Samsung Account 구성이면 재인증 절차 진행
-5. 웹사이트에서 동일 계정의 기기 목록이 정상 표시되는지 확인
+1. SmartThings Find 웹사이트에서 동일 계정의 기기 목록이 정상 표시되는지 확인
+2. 통합의 재인증 또는 재구성 실행
+3. 새 `chkLogin.do` Cookie header 입력
+4. Home Assistant 로그에서 연결 또는 인증 오류 확인
 
 ### 배터리가 Unknown
 
@@ -252,15 +243,16 @@ logger:
     custom_components.smartthings_find: debug
 ```
 
-디버그 로그에도 쿠키, 토큰, 콜백 주소 원문은 기록하지 않도록 구현되어 있습니다. 문제 보고 전 로그에 인증정보가 포함되지 않았는지 다시 확인하세요.
+디버그 로그에도 쿠키와 저장된 인증정보 원문은 기록하지 않습니다. 문제 보고 전 로그에 인증정보가 포함되지 않았는지 다시 확인하세요.
 
 ---
 
 ## Notes / Limitations
 
 - 삼성의 비공개·비문서화 API를 사용하므로 서버 변경에 영향을 받을 수 있습니다.
-- 일반 PC 브라우저가 전체 네이티브 앱 콜백을 노출하지 않으면 Samsung Account 신규 등록을 완료할 수 없습니다.
-- 삼성 서버가 계정의 장기 인증 또는 웹 세션을 취소하면 사용자 재로그인이 필요합니다.
+- 최초 Cookie 추출에는 데스크톱 브라우저 개발자도구가 필요합니다.
+- Cookie 방식은 서버가 세션을 완전히 취소한 경우 새 Cookie 입력이 필요합니다.
+- 기존 Samsung Account 호환은 과거에 등록을 완료한 항목에만 적용됩니다.
 - 위치 갱신 요청 성공이 새 GPS 위치 수신을 보장하지 않습니다.
 - 기기가 오프라인이거나 절전 상태이면 위치·배터리·Ring 결과가 지연되거나 실패할 수 있습니다.
 
@@ -269,4 +261,4 @@ logger:
 ## Credits / Upstream
 
 - Original upstream: `Vedeneb/HA-SmartThings-Find` (archived / read-only)
-- Optional persistent Samsung Account authorization: `charlesbel/samsung-re-find` (MIT)
+- Legacy Samsung Account runtime compatibility: `charlesbel/samsung-re-find` (MIT)
