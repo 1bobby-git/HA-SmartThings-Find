@@ -15,17 +15,6 @@ STF_DEVICE_LIST_PATH: Final = "device/getDeviceList.do"
 STF_SET_LAST_DEVICE_PATH: Final = "device/setLastSelect.do"
 STF_ADD_OPERATION_PATH: Final = "dm/addOperation.do"
 
-# Samsung's native-app account flow is pinned to this callback. A desktop
-# browser often exposes only the HTTPS completion page, which is not enough
-# unless the encrypted callback fields are present in its query or fragment.
-SAMSUNG_ACCOUNT_SIGN_IN_COMPLETE_URL: Final = (
-    "https://account.samsung.com/accounts/ANDROIDSDK/signInComplete"
-)
-SAMSUNG_ACCOUNT_APP_REDIRECT_URI: Final = (
-    "ms-app://s-1-15-2-4027708247-2189610-1983755848-2937435718-"
-    "1578786913-2158692839-1974417358"
-)
-
 # ----------------------------
 # Timing constants (seconds)
 # ----------------------------
@@ -40,10 +29,11 @@ LOCATION_POLL_DELAYS: Final[tuple[int, ...]] = (15, 30, 45)
 # Config / Options keys
 # ----------------------------
 CONF_AUTH_METHOD: Final = "auth_method"
+
+# AUTH_METHOD_ACCOUNT is retained only to load and migrate entries that were
+# enrolled by v1.4.0/v1.4.1. New setup, reauth and reconfigure use Cookie only.
 AUTH_METHOD_ACCOUNT: Final = "samsung_account"
 AUTH_METHOD_COOKIE: Final = "cookie"
-DEFAULT_AUTH_METHOD: Final = AUTH_METHOD_COOKIE
-CONF_REDIRECT_URI: Final = "redirect_uri"
 CONF_COOKIE: Final = "cookie"
 
 # Legacy keys (keep for backward compatibility)
@@ -60,7 +50,7 @@ CONF_KEEPALIVE_INTERVAL_DEFAULT: Final = 180  # seconds (3 min)
 KEEPALIVE_JITTER_RATIO: Final = 0.12
 
 # A single STF "Logout" body can be transient. The auth manager first refreshes
-# CSRF and then rebuilds the web session when Samsung Account auth is available.
+# CSRF and, for a previously enrolled legacy entry, may rebuild the web session.
 AUTH_RETRY_DELAYS: Final[tuple[int, ...]] = (2, 5, 15)
 AUTH_FAILURE_GRACE_PERIOD: Final = 30 * 60
 
