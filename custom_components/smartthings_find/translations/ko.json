@@ -3,27 +3,13 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "일반 PC의 기본 인증 방식은 **Cookie header**입니다. 이 방식에도 회전 쿠키 저장, CSRF 복구 및 KeepAlive가 적용됩니다. **Samsung Account**는 브라우저나 운영체제에서 전체 `ms-app://` 콜백을 실제로 확인할 수 있는 환경에만 제공되는 실험적 고급 옵션입니다.",
-        "data": {
-          "auth_method": "인증 방식"
-        }
-      },
-      "account": {
-        "title": "Samsung Account 로그인 (실험적)",
-        "description": "이 방식은 일반 PC에서 동작을 보장하지 않습니다. 삼성의 네이티브 앱 로그인은 고정된 `ms-app://` 콜백을 사용하며 Chrome·Edge 등의 일반 브라우저는 전체 콜백을 표시하지 않고 `{completion_url}` 페이지만 보여줄 수 있습니다.\n\n1. [Samsung Account 로그인 페이지 열기]({login_url})\n2. 삼성 로그인과 2단계 인증을 완료하세요.\n3. **전체 `ms-app://...?state=...` 주소**, 해당 주소가 포함된 오류 문구, 또는 인증 매개변수가 포함된 `signInComplete` 주소를 실제로 확인할 수 있을 때만 아래에 붙여넣으세요.\n4. 주소가 `{completion_url}`에서 끝나면 인증 값이 없는 것이므로 사용할 수 없습니다. 뒤로 가서 **Cookie header** 방식을 선택하세요.\n\nHome Assistant는 다른 PC 브라우저의 세션이나 누락된 콜백 값을 읽을 수 없습니다. 비밀번호와 2단계 인증 값은 이 통합에 전달되지 않습니다. 전체 콜백으로 최초 등록에 성공한 경우에만 저장된 장기 인증으로 웹 세션을 자동 재발급합니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
-        "data": {
-          "redirect_uri": "전체 로그인 콜백 (기본 signInComplete 주소만 입력 불가)",
-          "update_interval": "업데이트 간격 (초)",
-          "keepalive_interval": "세션 유지 간격 (초)",
-          "mode_smarttags": "SmartTag 모드",
-          "mode_others": "기타 기기 모드 (폰/워치/이어버드)"
-        }
+        "description": "SmartThings Find 웹사이트의 Cookie header로 설정합니다."
       },
       "cookie": {
-        "title": "Cookie header (기본)",
-        "description": "1) {stf_url} 로그인\n2) DevTools(F12) → Network\n3) `chkLogin.do` 선택\n4) Request Headers의 `Cookie:` 전체 줄을 복사해 입력하세요.\n\n일반 PC에서 재현 가능한 기본 방식입니다. 서버가 회전시킨 쿠키를 비공개 저장소에 반영하고, CSRF 복구와 약간 무작위화된 KeepAlive를 적용합니다. 다만 삼성 서버가 세션 자체를 완전히 폐기하면 새 Cookie header를 다시 입력해야 합니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
+        "title": "SmartThings Find Cookie 인증",
+        "description": "1. PC 브라우저에서 [{stf_url}]({stf_url})에 로그인하세요.\n2. 개발자도구(F12) → Network에서 페이지를 새로고침하세요.\n3. `chkLogin.do` 요청을 선택하세요.\n4. Request Headers의 `Cookie:` 전체 줄을 복사해 아래에 붙여넣으세요.\n\n**반드시 `smartthingsfind.samsung.com`의 `chkLogin.do` 요청 쿠키를 사용해야 합니다.** `account.samsung.com` 로그인 페이지에서 생성된 `sa_did`, `sa_trace`, `USAWSWIPSESSIONID`, `stk`, `JSESSIONID` 등은 SmartThings Find 인증 쿠키가 아니며 계정 범위가 더 민감할 수 있으므로 입력하지 마세요.\n\n아이폰 Safari만으로는 요청 Cookie 헤더 전체를 일반적으로 추출할 수 없습니다. 최초 설정은 PC의 Chrome, Edge 또는 Firefox에서 진행하세요.\n\n기존 Samsung Account 호환 항목에서 재인증 또는 재구성을 실행한 경우, 저장 후 Cookie 인증으로 전환되고 이전 장기 인증 파일은 삭제됩니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
         "data": {
-          "cookie": "Cookie header",
+          "cookie": "chkLogin.do의 Cookie header 전체",
           "update_interval": "업데이트 간격 (초)",
           "keepalive_interval": "세션 유지 간격 (초)",
           "mode_smarttags": "SmartTag 모드",
@@ -32,16 +18,15 @@
       }
     },
     "error": {
-      "callback_unavailable": "입력한 signInComplete 주소에는 인증 완료 데이터가 없습니다. 이 주소만으로는 Samsung Account 등록이 불가능하므로 뒤로 가서 Cookie header 방식을 선택하세요.",
-      "invalid_callback": "지원하지 않는 콜백이거나 state, code 등 필수 인증 값이 없습니다. 새 로그인 링크에서 전체 콜백을 다시 확인하세요.",
-      "invalid_auth": "인증에 실패했습니다. 새 로그인 링크로 다시 로그인하거나 Cookie header를 확인하세요.",
-      "no_devices": "계정에서 기기를 찾지 못했습니다. SmartThings Find에서 기기가 보이는지 확인하세요.",
-      "cannot_connect": "삼성 인증 서버 또는 SmartThings Find에 연결하지 못했습니다. 잠시 후 다시 시도하세요.",
+      "account_cookie_not_supported": "삼성 계정 로그인 페이지의 쿠키가 감지됐습니다. 이 쿠키는 SmartThings Find 세션이 아니며 계정 범위가 더 민감할 수 있습니다. 해당 쿠키를 폐기하고 smartthingsfind.samsung.com의 chkLogin.do 요청 Cookie 헤더를 입력하세요.",
+      "invalid_auth": "SmartThings Find Cookie 인증에 실패했습니다. smartthingsfind.samsung.com의 chkLogin.do 요청에서 새 Cookie 헤더를 복사하세요.",
+      "no_devices": "계정에서 기기를 찾지 못했습니다. SmartThings Find 웹사이트에서 기기가 보이는지 확인하세요.",
+      "cannot_connect": "SmartThings Find에 연결하지 못했습니다. 네트워크 상태를 확인한 뒤 다시 시도하세요.",
       "unknown": "알 수 없는 오류가 발생했습니다."
     },
     "abort": {
-      "reauth_successful": "재인증이 완료되었습니다.",
-      "reconfigure_successful": "인증 방식과 설정이 변경되었습니다.",
+      "reauth_successful": "Cookie 인증으로 재인증이 완료되었습니다.",
+      "reconfigure_successful": "설정을 저장하고 Cookie 인증으로 구성했습니다.",
       "already_configured": "SmartThings Find가 이미 구성되어 있습니다."
     }
   },
@@ -49,9 +34,9 @@
     "step": {
       "init": {
         "title": "SmartThings Find 설정",
-        "description": "현재 인증 방식: `{auth_method}`\n\nCookie 방식에서는 새 Cookie header를 입력할 수 있으며 비워두면 기존 값을 유지합니다. Samsung Account 방식은 최초 전체 콜백 등록에 성공한 기존 구성에서 만료된 웹 세션을 자동 재발급합니다.\n\nKeepAlive는 설정값을 기준으로 약간 무작위화해 호출합니다. 기본값은 180초입니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회\n- Active: 위치 업데이트 요청",
+        "description": "Cookie 인증 항목에서는 새 Cookie header를 입력할 수 있으며 비워두면 기존 값을 유지합니다. 기존 Samsung Account 호환 항목은 저장된 장기 인증이 유효한 동안 계속 동작하지만 신규 등록은 지원하지 않습니다. Cookie 방식으로 전환하거나 재인증하려면 통합의 **재구성**을 실행하세요.\n\nKeepAlive는 설정값을 기준으로 약간 무작위화해 호출합니다. 기본값은 180초입니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회\n- Active: 위치 업데이트 요청",
         "data": {
-          "cookie": "새 Cookie header (선택사항)",
+          "cookie": "새 chkLogin.do Cookie header (선택사항)",
           "update_interval": "업데이트 간격 (초)",
           "keepalive_interval": "세션 유지 간격 (초)",
           "mode_smarttags": "SmartTag 모드",
@@ -60,9 +45,10 @@
       }
     },
     "error": {
-      "invalid_auth": "인증에 실패했습니다. Cookie header가 만료되었거나 잘못되었습니다.",
+      "account_cookie_not_supported": "삼성 계정 로그인 페이지의 쿠키는 사용할 수 없습니다. SmartThings Find의 chkLogin.do 요청 Cookie 헤더를 입력하세요.",
+      "invalid_auth": "SmartThings Find Cookie header가 만료되었거나 올바르지 않습니다.",
       "no_devices": "계정에서 기기를 찾지 못했습니다.",
-      "cannot_connect": "연결에 실패했습니다. 잠시 후 다시 시도하세요."
+      "cannot_connect": "SmartThings Find 연결에 실패했습니다. 잠시 후 다시 시도하세요."
     }
   }
 }
