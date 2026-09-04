@@ -12,5 +12,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Verify persistent authentication dependency
+        run: |
+          python -m pip install --disable-pip-version-check "samsung-re-find==0.2.2"
+          python -c "from samsung_find.auth import SamsungAuth; print(SamsungAuth.__name__)"
+      - name: Compile integration modules
+        run: python -m compileall -q custom_components/smartthings_find
       - name: Run unit tests
         run: python -m unittest discover -s tests
