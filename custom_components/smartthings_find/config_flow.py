@@ -26,6 +26,7 @@ from .const import (
     CONF_UPDATE_INTERVAL,
     CONF_UPDATE_INTERVAL_DEFAULT,
     DOMAIN,
+    STF_BASE_URL,
 )
 from .device_inventory import get_devices
 from .session_store import async_remove_session_store
@@ -400,6 +401,9 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="cookie",
             data_schema=vol.Schema(schema_fields),
+            description_placeholders={
+                "stf_url": STF_BASE_URL.rstrip("/"),
+            },
             errors=errors,
         )
 

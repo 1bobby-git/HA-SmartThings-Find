@@ -21,7 +21,7 @@
       },
       "cookie": {
         "title": "Cookie header compatibility mode",
-        "description": "1) Sign in at https://smartthingsfind.samsung.com\n2) DevTools (F12) → Network\n3) Select `chkLogin.do`\n4) Copy the complete `Cookie:` request header and paste it below.\n\nThis mode still requires a newly copied cookie when Samsung fully revokes the server session. Samsung Account authentication is recommended for unattended operation.\n\n**Mode**\n- Passive: read the cached server location\n- Active: request a location update first",
+        "description": "1) Sign in at {stf_url}\n2) DevTools (F12) → Network\n3) Select `chkLogin.do`\n4) Copy the complete `Cookie:` request header and paste it below.\n\nThis mode still requires a newly copied cookie when Samsung fully revokes the server session. Samsung Account authentication is recommended for unattended operation.\n\n**Mode**\n- Passive: read the cached server location\n- Active: request a location update first",
         "data": {
           "cookie": "Cookie header",
           "update_interval": "Update interval (seconds)",

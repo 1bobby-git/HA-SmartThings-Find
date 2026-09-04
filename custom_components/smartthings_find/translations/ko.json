@@ -21,7 +21,7 @@
       },
       "cookie": {
         "title": "Cookie header 호환 모드",
-        "description": "1) https://smartthingsfind.samsung.com 로그인\n2) DevTools(F12) → Network\n3) `chkLogin.do` 선택\n4) Request Headers의 `Cookie:` 전체 줄을 복사해 입력하세요.\n\n이 방식은 서버가 세션을 완전히 폐기하면 새 쿠키를 다시 입력해야 합니다. 장기간 무인 사용에는 Samsung Account 방식을 권장합니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
+        "description": "1) {stf_url} 로그인\n2) DevTools(F12) → Network\n3) `chkLogin.do` 선택\n4) Request Headers의 `Cookie:` 전체 줄을 복사해 입력하세요.\n\n이 방식은 서버가 세션을 완전히 폐기하면 새 쿠키를 다시 입력해야 합니다. 장기간 무인 사용에는 Samsung Account 방식을 권장합니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
         "data": {
           "cookie": "Cookie header",
           "update_interval": "업데이트 간격 (초)",

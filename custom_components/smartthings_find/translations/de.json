@@ -21,7 +21,7 @@
       },
       "cookie": {
         "title": "Cookie-Header-Kompatibilitätsmodus",
-        "description": "Bei https://smartthingsfind.samsung.com anmelden, in den Entwicklertools `chkLogin.do` auswählen und den vollständigen `Cookie:` Request Header einfügen. Bei vollständigem serverseitigem Ablauf muss der Cookie erneut kopiert werden.",
+        "description": "Bei {stf_url} anmelden, in den Entwicklertools `chkLogin.do` auswählen und den vollständigen `Cookie:` Request Header einfügen. Bei vollständigem serverseitigem Ablauf muss der Cookie erneut kopiert werden.",
         "data": {
           "cookie": "Cookie header",
           "update_interval": "Aktualisierungsintervall (Sekunden)",
