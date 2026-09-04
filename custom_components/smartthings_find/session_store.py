@@ -87,6 +87,23 @@ def _fallback_cookie(entry: Any) -> str:
     return _configured_cookie(entry)
 
 
+def _stored_cookie_snapshot(
+    payload: Any,
+    source_hashes: set[str | None],
+) -> str | None:
+    """Return a stored cookie snapshot, including an intentional empty marker."""
+    if not isinstance(payload, dict):
+        return None
+    if payload.get(_SOURCE_HASH_KEY) not in source_hashes:
+        return None
+    cookie_line = payload.get(_COOKIE_KEY)
+    if not isinstance(cookie_line, str):
+        return None
+    if cookie_line and not parse_cookie_header(cookie_line):
+        return None
+    return cookie_line
+
+
 async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
     """Load a rotated cookie only when it belongs to this auth source."""
     source = _source_identity(entry)
@@ -97,13 +114,9 @@ async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
     source_hash = _source_hash(source)
     runtime = _runtime_data(hass, entry.entry_id)
     cached = runtime.get(_COOKIE_CACHE_KEY)
-    if (
-        isinstance(cached, dict)
-        and cached.get(_SOURCE_HASH_KEY) == source_hash
-        and isinstance(cached.get(_COOKIE_KEY), str)
-        and parse_cookie_header(cached[_COOKIE_KEY])
-    ):
-        return cached[_COOKIE_KEY]
+    cached_cookie = _stored_cookie_snapshot(cached, {source_hash})
+    if cached_cookie is not None:
+        return cached_cookie
 
     try:
         stored = await _store(hass, entry.entry_id).async_load()
@@ -115,15 +128,14 @@ async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
         return fallback
 
     legacy_hash = _legacy_source_hash(entry)
-    if (
-        isinstance(stored, dict)
-        and stored.get(_SOURCE_HASH_KEY) in {source_hash, legacy_hash}
-        and isinstance(stored.get(_COOKIE_KEY), str)
-        and parse_cookie_header(stored[_COOKIE_KEY])
-    ):
+    stored_cookie = _stored_cookie_snapshot(
+        stored,
+        {source_hash, legacy_hash},
+    )
+    if stored_cookie is not None:
         payload = {
             _SOURCE_HASH_KEY: source_hash,
-            _COOKIE_KEY: stored[_COOKIE_KEY],
+            _COOKIE_KEY: stored_cookie,
         }
         runtime[_COOKIE_CACHE_KEY] = payload
         if stored.get(_SOURCE_HASH_KEY) != source_hash:
@@ -134,7 +146,7 @@ async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
                     "Unable to migrate the legacy session-store boundary (%s)",
                     type(err).__name__,
                 )
-        return stored[_COOKIE_KEY]
+        return stored_cookie
 
     runtime[_COOKIE_CACHE_KEY] = {
         _SOURCE_HASH_KEY: source_hash,
@@ -163,18 +175,16 @@ async def persist_cookie_to_store(
     """Persist the current effective jar in ``.storage``.
 
     The previous implementation merged the new jar into an older serialized
-    cookie line.  That could resurrect a cookie Samsung had explicitly removed.
+    cookie line. That could resurrect a cookie Samsung had explicitly removed.
     The dedicated session already contains the seed cookies, so the current jar
-    is authoritative and must replace the stored snapshot.
+    is authoritative and must replace the stored snapshot, including an empty
+    jar when the server has removed every cookie.
     """
     source = _source_identity(entry)
     if not source:
         return
 
     cookie_line = _cookie_line_from_session(session)
-    if not cookie_line:
-        return
-
     payload = {
         _SOURCE_HASH_KEY: _source_hash(source),
         _COOKIE_KEY: cookie_line,
