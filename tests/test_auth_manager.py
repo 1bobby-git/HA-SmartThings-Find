@@ -89,8 +89,10 @@ def _load_auth_manager_module():
     async def async_load_cookie_line(_hass, entry):
         return str(entry.data.get("cookie") or "")
 
-    async def persist_cookie_to_store(*_args, **_kwargs):
-        return None
+    persisted_cookie_snapshots = []
+
+    async def persist_cookie_to_store(_hass, _entry, session):
+        persisted_cookie_snapshots.append(dict(session.cookie_jar.values))
 
     session_store.async_load_cookie_line = async_load_cookie_line
     session_store.persist_cookie_to_store = persist_cookie_to_store
@@ -130,6 +132,7 @@ def _load_auth_manager_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     module._TestAccountAuth = SamsungAccountAuth
+    module._persisted_cookie_snapshots = persisted_cookie_snapshots
     return module
 
 
@@ -199,6 +202,32 @@ class AuthManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("ok", await manager.async_read(operation))
         self.assertEqual(2, operation_calls)
         self.assertEqual(1, csrf_calls)
+
+    async def test_auth_failure_persists_server_cookie_deletion_before_repair(self) -> None:
+        hass = _Hass()
+        session = _Session()
+        session.cookie_jar.values["JSESSIONID"] = "old-session"
+        manager = auth_manager.SmartThingsFindAuthManager(
+            hass,
+            _Entry(auth_manager.AUTH_METHOD_COOKIE),
+            session,
+        )
+        auth_manager._persisted_cookie_snapshots.clear()
+
+        async def fetch_csrf(*_args, **_kwargs):
+            raise auth_manager.ConfigEntryAuthFailed("expired")
+
+        auth_manager.fetch_csrf = fetch_csrf
+
+        async def operation():
+            session.cookie_jar.clear()
+            raise auth_manager.ConfigEntryAuthFailed("server deleted cookie")
+
+        with self.assertRaises(auth_manager.ConfigEntryAuthFailed):
+            await manager.async_read(operation)
+
+        self.assertGreaterEqual(len(auth_manager._persisted_cookie_snapshots), 1)
+        self.assertEqual({}, auth_manager._persisted_cookie_snapshots[0])
 
     async def test_account_mode_rebuilds_web_session_after_csrf_repair_fails(self) -> None:
         hass = _Hass()

@@ -185,6 +185,19 @@ class SessionPersistenceV140Tests(unittest.IsolatedAsyncioTestCase):
         loaded = await session_store.async_load_cookie_line(hass, entry)
         self.assertEqual("JSESSIONID=renewed", loaded)
 
+    async def test_account_mode_rejects_an_unbound_legacy_snapshot(self) -> None:
+        hass = types.SimpleNamespace(data={})
+        entry = _Entry("", session_store.AUTH_METHOD_ACCOUNT)
+        key = f"{session_store.DOMAIN}.{entry.entry_id}.session"
+        _MemoryStore.values[key] = {
+            "source_hash": None,
+            "cookie": "JSESSIONID=foreign-session",
+        }
+
+        loaded = await session_store.async_load_cookie_line(hass, entry)
+
+        self.assertEqual("", loaded)
+
     async def test_v13_cookie_snapshot_is_loaded_and_migrated_in_place(self) -> None:
         hass = types.SimpleNamespace(data={})
         entry = _Entry("seed=one")

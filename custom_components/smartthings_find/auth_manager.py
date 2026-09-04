@@ -140,7 +140,11 @@ class SmartThingsFindAuthManager:
             cookie_line = await self._restore_cookie_snapshot_locked()
 
         self._replace_cookies(cookie_line)
-        await self._fetch_csrf_locked(retry_delays=AUTH_RETRY_DELAYS)
+        try:
+            await self._fetch_csrf_locked(retry_delays=AUTH_RETRY_DELAYS)
+        except ConfigEntryAuthFailed:
+            await self._persist_best_effort_locked()
+            raise
         await self._persist_best_effort_locked()
         _LOGGER.info(
             "SmartThings Find web session was rebuilt automatically "
@@ -160,6 +164,7 @@ class SmartThingsFindAuthManager:
                     clear_auth_failure(self.hass, self.entry.entry_id)
                     return
                 except ConfigEntryAuthFailed:
+                    await self._persist_best_effort_locked()
                     self._clear_csrf()
 
             if self._auth_method != AUTH_METHOD_ACCOUNT:
@@ -178,6 +183,7 @@ class SmartThingsFindAuthManager:
             await self._fetch_csrf_locked(retry_delays=(2, 5))
             return await operation()
         except ConfigEntryAuthFailed:
+            await self._persist_best_effort_locked()
             self._clear_csrf()
 
         await self._rebuild_session_locked()
@@ -192,6 +198,7 @@ class SmartThingsFindAuthManager:
             try:
                 result = await operation()
             except ConfigEntryAuthFailed:
+                await self._persist_best_effort_locked()
                 result = await self._repair_csrf_and_retry_locked(operation)
 
             await self._persist_best_effort_locked()
@@ -222,6 +229,7 @@ class SmartThingsFindAuthManager:
             try:
                 await self._fetch_csrf_locked(retry_delays=(2, 5))
             except ConfigEntryAuthFailed:
+                await self._persist_best_effort_locked()
                 await self._rebuild_session_locked()
 
             try:
@@ -232,6 +240,7 @@ class SmartThingsFindAuthManager:
                     entry_id=self.entry.entry_id,
                 )
             except ConfigEntryAuthFailed as err:
+                await self._persist_best_effort_locked()
                 # Active mode sends CHECK_CONNECTION_WITH_LOCATION before the
                 # read. The server may already have accepted that wake request,
                 # so repair credentials for the next poll but never replay this
@@ -280,6 +289,7 @@ class SmartThingsFindAuthManager:
                 # session is valid before any physical effect is dispatched.
                 await self._fetch_csrf_locked(retry_delays=(2, 5))
             except ConfigEntryAuthFailed:
+                await self._persist_best_effort_locked()
                 await self._rebuild_session_locked()
 
             try:
@@ -290,6 +300,7 @@ class SmartThingsFindAuthManager:
                     payload,
                 )
             except ConfigEntryAuthFailed as err:
+                await self._persist_best_effort_locked()
                 # The server may have accepted an effect before returning an
                 # unusable response. Repair credentials for the next command,
                 # but never replay the effect automatically.

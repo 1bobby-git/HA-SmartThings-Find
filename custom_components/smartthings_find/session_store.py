@@ -128,9 +128,12 @@ async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
         return fallback
 
     legacy_hash = _legacy_source_hash(entry)
+    accepted_hashes: set[str | None] = {source_hash}
+    if legacy_hash is not None:
+        accepted_hashes.add(legacy_hash)
     stored_cookie = _stored_cookie_snapshot(
         stored,
-        {source_hash, legacy_hash},
+        accepted_hashes,
     )
     if stored_cookie is not None:
         payload = {
