@@ -111,4 +111,4 @@ jobs:
             "${asset}#Home Assistant 통합 설치 파일" \
             --target "${RELEASE_SHA}" \
             --title "SmartThings Find ${{ steps.release.outputs.tag }}" \
-            --notes "일반 PC에서 재현 가능한 Cookie header 방식을 신규 설치 기본값으로 복원했습니다. Samsung Account 방식은 전체 ms-app 콜백을 실제로 얻을 수 있는 환경에서만 사용하는 실험적 옵션으로 조정했고, 기본 signInComplete 주소만 입력한 경우 필요한 인증 값이 없음을 정확히 안내합니다. 기존 Samsung Account 구성의 자동 웹 세션 재발급과 Cookie 방식의 회전 쿠키 저장·CSRF 복구·KeepAlive는 그대로 유지됩니다."
+            --notes "신규 설치·재인증·재구성을 SmartThings Find chkLogin.do Cookie header 방식으로 단일화했습니다. 일반 PC나 아이폰에서 완료할 수 없는 Samsung Account ms-app 콜백 등록 화면은 제거했으며, 기존에 등록된 Samsung Account 항목만 저장 인증이 유효한 동안 런타임 호환됩니다. account.samsung.com 쿠키가 거부된 경우 잘못된 출처를 별도로 안내하고, 기존 항목은 재구성 시 Cookie 방식으로 안전하게 전환합니다."
