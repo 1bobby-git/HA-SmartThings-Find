@@ -1,4 +1,4 @@
-"""Persistent Samsung Account authorization for SmartThings Find."""
+"""Runtime compatibility for previously enrolled Samsung Account entries."""
 
 from __future__ import annotations
 
@@ -9,27 +9,22 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
-from .account_callback import normalize_samsung_account_callback
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class SamsungAccountAuthError(Exception):
-    """Raised when Samsung Account authorization cannot be completed or reused."""
+    """Raised when stored legacy Samsung Account authorization cannot be reused."""
 
 
 class SamsungAccountAuth:
-    """Run samsung-re-find authentication with HA-owned private state paths.
+    """Reuse previously stored samsung-re-find credentials.
 
-    The third-party library stores a long-lived Samsung Account master grant and
-    rotating derived credentials. The integration stores no password or second
-    factor and only asks the library for a validated/rebuilt web JSESSIONID.
-
-    Interactive completion is deliberately limited to callbacks that actually
-    contain Samsung's encrypted authentication fields. A bare browser landing
-    page such as ``.../ANDROIDSDK/signInComplete`` cannot be turned into a
-    callback because its data remains in the user's separate browser session.
+    New Samsung Account enrollment is no longer exposed by this integration.
+    This adapter remains only so entries that completed the former native-app
+    callback flow can renew a SmartThings Find web JSESSIONID until they are
+    migrated to the supported Cookie header method.
     """
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -50,8 +45,8 @@ class SamsungAccountAuth:
         self._lock = lock
 
     def _new_client(self):
-        # Imported lazily so cookie entries can still load even if an
-        # installation temporarily has a dependency problem.
+        # Imported lazily so ordinary Cookie entries still load if the legacy
+        # compatibility dependency is temporarily unavailable.
         from samsung_find.auth import SamsungAuth
 
         return SamsungAuth(
@@ -61,69 +56,8 @@ class SamsungAccountAuth:
             legacy_state_path=self._legacy_state_path,
         )
 
-    async def async_start(self, *, country: str, locale: str) -> str:
-        """Create a one-time Samsung Account sign-in URL."""
-        async with self._lock:
-            try:
-                return await self.hass.async_add_executor_job(
-                    self._start_sync,
-                    country,
-                    locale,
-                )
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning(
-                    "Unable to start Samsung Account authentication (%s)",
-                    type(err).__name__,
-                )
-                raise SamsungAccountAuthError(
-                    "Samsung Account login could not be started"
-                ) from err
-
-    def _start_sync(self, country: str, locale: str) -> str:
-        client = self._new_client()
-        try:
-            return str(
-                client.start(
-                    country=(country or "US").lower(),
-                    locale=locale or "en-US",
-                )
-            )
-        finally:
-            client.close()
-
-    async def async_complete(self, redirect_uri: str) -> str:
-        """Finish interactive sign-in and return a validated web cookie line."""
-        # Normalize before entering the auth lock. This rejects callback-free
-        # signInComplete pages without touching or consuming pending auth state.
-        callback = normalize_samsung_account_callback(redirect_uri)
-
-        async with self._lock:
-            try:
-                jsessionid = await self.hass.async_add_executor_job(
-                    self._complete_sync,
-                    callback,
-                )
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning(
-                    "Samsung Account authentication completion failed (%s)",
-                    type(err).__name__,
-                )
-                raise SamsungAccountAuthError(
-                    "Samsung Account login could not be completed"
-                ) from err
-
-        return f"JSESSIONID={jsessionid}"
-
-    def _complete_sync(self, redirect_uri: str) -> str:
-        client = self._new_client()
-        try:
-            client.complete(redirect_uri)
-            return str(client.web_session_cookie())
-        finally:
-            client.close()
-
     async def async_cookie(self, *, force_refresh: bool = False) -> str:
-        """Return a valid cookie, rebuilding the web session when required."""
+        """Return a valid web cookie from previously stored authorization."""
         async with self._lock:
             try:
                 jsessionid = await self.hass.async_add_executor_job(
@@ -132,11 +66,12 @@ class SamsungAccountAuth:
                 )
             except Exception as err:  # noqa: BLE001
                 _LOGGER.warning(
-                    "Unable to obtain a Samsung Find web session (%s)",
+                    "Unable to obtain a legacy Samsung Find web session (%s)",
                     type(err).__name__,
                 )
                 raise SamsungAccountAuthError(
-                    "Samsung Find web session could not be renewed"
+                    "Stored Samsung Account authorization could not renew "
+                    "the Samsung Find web session"
                 ) from err
 
         return f"JSESSIONID={jsessionid}"
@@ -155,7 +90,7 @@ class SamsungAccountAuth:
                 return await self.hass.async_add_executor_job(self._status_sync)
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug(
-                    "Unable to read Samsung Account auth status (%s)",
+                    "Unable to read legacy Samsung Account auth status (%s)",
                     type(err).__name__,
                 )
                 return {"authenticated": False}
@@ -169,7 +104,7 @@ class SamsungAccountAuth:
             client.close()
 
     async def async_remove(self) -> None:
-        """Delete locally stored Samsung credentials when the entry is removed."""
+        """Delete stored legacy credentials when removed or migrated."""
         async with self._lock:
             await self.hass.async_add_executor_job(self._remove_sync)
 
