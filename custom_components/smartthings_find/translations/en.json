@@ -3,27 +3,13 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "The default method for a normal desktop PC is **Cookie header**. Rotated-cookie persistence, CSRF recovery, and keepalive still apply. **Samsung Account** is an experimental advanced option only for environments that actually expose the complete `ms-app://` callback.",
-        "data": {
-          "auth_method": "Authentication method"
-        }
-      },
-      "account": {
-        "title": "Samsung Account sign-in (experimental)",
-        "description": "This method is not guaranteed to work on a normal desktop PC. Samsung's native-app sign-in uses a fixed `ms-app://` callback, while common browsers such as Chrome and Edge may show only `{completion_url}` without exposing the complete callback.\n\n1. [Open the Samsung Account sign-in page]({login_url})\n2. Complete Samsung sign-in and any second-factor prompt.\n3. Paste a **complete `ms-app://...?state=...` address**, an error message containing that address, or a parameterized `signInComplete` address only when your environment actually exposes it.\n4. If the address ends at `{completion_url}`, it contains no authorization data and cannot be used. Go back and select **Cookie header**.\n\nHome Assistant cannot read another PC browser's session or reconstruct missing callback values. Your password and second factor are handled by Samsung. Automatic web-session renewal becomes available only after initial enrollment succeeds with a complete callback.\n\n**Mode**\n- Passive: read the cached server location (lower battery impact)\n- Active: request a location update first (fresher, higher battery impact)",
-        "data": {
-          "redirect_uri": "Complete sign-in callback (bare signInComplete URL is insufficient)",
-          "update_interval": "Update interval (seconds)",
-          "keepalive_interval": "Session keepalive interval (seconds)",
-          "mode_smarttags": "SmartTag mode",
-          "mode_others": "Other devices mode (phone/watch/earbuds)"
-        }
+        "description": "Set up the integration with a SmartThings Find website Cookie header."
       },
       "cookie": {
-        "title": "Cookie header (default)",
-        "description": "1) Sign in at {stf_url}\n2) DevTools (F12) → Network\n3) Select `chkLogin.do`\n4) Copy the complete `Cookie:` request header and paste it below.\n\nThis is the reproducible default on a normal desktop PC. Server-rotated cookies are saved privately, and CSRF recovery plus jittered keepalive remain enabled. A newly copied Cookie header is still required if Samsung fully revokes the server session.\n\n**Mode**\n- Passive: read the cached server location\n- Active: request a location update first",
+        "title": "SmartThings Find Cookie authentication",
+        "description": "1. Sign in to [{stf_url}]({stf_url}) in a desktop browser.\n2. Open Developer Tools (F12) → Network and refresh the page.\n3. Select the `chkLogin.do` request.\n4. Copy the complete `Cookie:` request header and paste it below.\n\n**Use only the `chkLogin.do` request cookie from `smartthingsfind.samsung.com`.** Cookies created by the `account.samsung.com` sign-in page, including names such as `sa_did`, `sa_trace`, `USAWSWIPSESSIONID`, `stk`, or `JSESSIONID`, are not SmartThings Find authentication cookies and can be more sensitive. Do not submit them.\n\nMobile Safari on an iPhone normally cannot expose the complete request Cookie header. Use Chrome, Edge, or Firefox on a desktop PC for initial setup.\n\nWhen an existing legacy Samsung Account entry is reauthenticated or reconfigured, saving this form migrates it to Cookie authentication and removes the former long-lived credentials.\n\n**Mode**\n- Passive: read the cached server location (lower battery impact)\n- Active: request a location update first (fresher, higher battery impact)",
         "data": {
-          "cookie": "Cookie header",
+          "cookie": "Complete Cookie header from chkLogin.do",
           "update_interval": "Update interval (seconds)",
           "keepalive_interval": "Session keepalive interval (seconds)",
           "mode_smarttags": "SmartTag mode",
@@ -32,16 +18,15 @@
       }
     },
     "error": {
-      "callback_unavailable": "The supplied signInComplete address contains no authentication result. Samsung Account enrollment cannot use this URL alone; go back and select Cookie header.",
-      "invalid_callback": "The callback is unsupported or missing required values such as state and code. Start a new sign-in and provide the complete callback.",
-      "invalid_auth": "Authentication failed. Start again with a new sign-in link or verify the Cookie header.",
-      "no_devices": "No devices were found for this account.",
-      "cannot_connect": "Unable to connect to Samsung authentication or SmartThings Find. Try again later.",
+      "account_cookie_not_supported": "Cookies from the Samsung Account sign-in page were detected. They are not a SmartThings Find session and can be more sensitive. Discard them and provide the Cookie request header from smartthingsfind.samsung.com's chkLogin.do request.",
+      "invalid_auth": "SmartThings Find Cookie authentication failed. Copy a fresh Cookie request header from smartthingsfind.samsung.com's chkLogin.do request.",
+      "no_devices": "No devices were found for this account. Verify that they appear on the SmartThings Find website.",
+      "cannot_connect": "Unable to connect to SmartThings Find. Check the network connection and try again.",
       "unknown": "Unexpected error."
     },
     "abort": {
-      "reauth_successful": "Re-authentication completed.",
-      "reconfigure_successful": "Authentication and settings were updated.",
+      "reauth_successful": "Re-authentication with Cookie authentication completed.",
+      "reconfigure_successful": "Settings were saved with Cookie authentication.",
       "already_configured": "SmartThings Find is already configured."
     }
   },
@@ -49,9 +34,9 @@
     "step": {
       "init": {
         "title": "SmartThings Find options",
-        "description": "Current authentication method: `{auth_method}`\n\nCookie mode allows a replacement Cookie header; leave it empty to retain the current value. Samsung Account mode can rebuild an expired web session for an existing entry whose initial enrollment succeeded with a complete callback.\n\nKeepalive calls use slight timing jitter around the configured interval. The default is 180 seconds.\n\n**Mode**\n- Passive: read the cached server location\n- Active: request a location update first",
+        "description": "Cookie-authenticated entries can accept a replacement Cookie header; leave it empty to retain the current value. Existing legacy Samsung Account entries continue while their stored authorization remains valid, but new enrollment is not supported. Use the integration's **Reconfigure** action to migrate or reauthenticate with a Cookie header.\n\nKeepalive calls use slight timing jitter around the configured interval. The default is 180 seconds.\n\n**Mode**\n- Passive: read the cached server location\n- Active: request a location update first",
         "data": {
-          "cookie": "New Cookie header (optional)",
+          "cookie": "New chkLogin.do Cookie header (optional)",
           "update_interval": "Update interval (seconds)",
           "keepalive_interval": "Session keepalive interval (seconds)",
           "mode_smarttags": "SmartTag mode",
@@ -60,9 +45,10 @@
       }
     },
     "error": {
-      "invalid_auth": "Authentication failed. The Cookie header is expired or invalid.",
+      "account_cookie_not_supported": "Samsung Account sign-in cookies cannot be used. Provide the Cookie request header from SmartThings Find's chkLogin.do request.",
+      "invalid_auth": "The SmartThings Find Cookie header is expired or invalid.",
       "no_devices": "No devices were found for this account.",
-      "cannot_connect": "Connection failed. Try again later."
+      "cannot_connect": "Unable to connect to SmartThings Find. Try again later."
     }
   }
 }
