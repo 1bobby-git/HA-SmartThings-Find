@@ -3,16 +3,16 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "인증 방식을 선택하세요. **Samsung Account** 방식은 웹 세션이 만료되면 저장된 장기 인증으로 새 세션을 자동 발급하므로 권장합니다. 기존 Cookie header 방식도 호환용으로 유지됩니다.",
+        "description": "일반 PC의 기본 인증 방식은 **Cookie header**입니다. 이 방식에도 회전 쿠키 저장, CSRF 복구 및 KeepAlive가 적용됩니다. **Samsung Account**는 브라우저나 운영체제에서 전체 `ms-app://` 콜백을 실제로 확인할 수 있는 환경에만 제공되는 실험적 고급 옵션입니다.",
         "data": {
           "auth_method": "인증 방식"
         }
       },
       "account": {
-        "title": "Samsung Account 로그인",
-        "description": "1. [Samsung Account 로그인 페이지 열기]({login_url})\n2. 삼성 로그인과 2단계 인증을 완료하세요.\n3. 브라우저가 `ms-app://...` 주소로 이동하거나 앱을 열 수 없다는 화면을 표시하면 **주소 전체를 복사**하세요.\n4. 복사한 주소를 아래에 붙여넣으세요.\n\n비밀번호와 2단계 인증 값은 이 통합에 전달되지 않습니다. 저장된 장기 인증은 Home Assistant의 `.storage`에 비공개 파일로 보관되며 세션·토큰 재발급에만 사용됩니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
+        "title": "Samsung Account 로그인 (실험적)",
+        "description": "이 방식은 일반 PC에서 동작을 보장하지 않습니다. 삼성의 네이티브 앱 로그인은 고정된 `ms-app://` 콜백을 사용하며 Chrome·Edge 등의 일반 브라우저는 전체 콜백을 표시하지 않고 `{completion_url}` 페이지만 보여줄 수 있습니다.\n\n1. [Samsung Account 로그인 페이지 열기]({login_url})\n2. 삼성 로그인과 2단계 인증을 완료하세요.\n3. **전체 `ms-app://...?state=...` 주소**, 해당 주소가 포함된 오류 문구, 또는 인증 매개변수가 포함된 `signInComplete` 주소를 실제로 확인할 수 있을 때만 아래에 붙여넣으세요.\n4. 주소가 `{completion_url}`에서 끝나면 인증 값이 없는 것이므로 사용할 수 없습니다. 뒤로 가서 **Cookie header** 방식을 선택하세요.\n\nHome Assistant는 다른 PC 브라우저의 세션이나 누락된 콜백 값을 읽을 수 없습니다. 비밀번호와 2단계 인증 값은 이 통합에 전달되지 않습니다. 전체 콜백으로 최초 등록에 성공한 경우에만 저장된 장기 인증으로 웹 세션을 자동 재발급합니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
         "data": {
-          "redirect_uri": "로그인 완료 후 ms-app:// 주소 전체",
+          "redirect_uri": "전체 로그인 콜백 (기본 signInComplete 주소만 입력 불가)",
           "update_interval": "업데이트 간격 (초)",
           "keepalive_interval": "세션 유지 간격 (초)",
           "mode_smarttags": "SmartTag 모드",
@@ -20,8 +20,8 @@
         }
       },
       "cookie": {
-        "title": "Cookie header 호환 모드",
-        "description": "1) {stf_url} 로그인\n2) DevTools(F12) → Network\n3) `chkLogin.do` 선택\n4) Request Headers의 `Cookie:` 전체 줄을 복사해 입력하세요.\n\n이 방식은 서버가 세션을 완전히 폐기하면 새 쿠키를 다시 입력해야 합니다. 장기간 무인 사용에는 Samsung Account 방식을 권장합니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
+        "title": "Cookie header (기본)",
+        "description": "1) {stf_url} 로그인\n2) DevTools(F12) → Network\n3) `chkLogin.do` 선택\n4) Request Headers의 `Cookie:` 전체 줄을 복사해 입력하세요.\n\n일반 PC에서 재현 가능한 기본 방식입니다. 서버가 회전시킨 쿠키를 비공개 저장소에 반영하고, CSRF 복구와 약간 무작위화된 KeepAlive를 적용합니다. 다만 삼성 서버가 세션 자체를 완전히 폐기하면 새 Cookie header를 다시 입력해야 합니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
         "data": {
           "cookie": "Cookie header",
           "update_interval": "업데이트 간격 (초)",
@@ -32,6 +32,8 @@
       }
     },
     "error": {
+      "callback_unavailable": "입력한 signInComplete 주소에는 인증 완료 데이터가 없습니다. 이 주소만으로는 Samsung Account 등록이 불가능하므로 뒤로 가서 Cookie header 방식을 선택하세요.",
+      "invalid_callback": "지원하지 않는 콜백이거나 state, code 등 필수 인증 값이 없습니다. 새 로그인 링크에서 전체 콜백을 다시 확인하세요.",
       "invalid_auth": "인증에 실패했습니다. 새 로그인 링크로 다시 로그인하거나 Cookie header를 확인하세요.",
       "no_devices": "계정에서 기기를 찾지 못했습니다. SmartThings Find에서 기기가 보이는지 확인하세요.",
       "cannot_connect": "삼성 인증 서버 또는 SmartThings Find에 연결하지 못했습니다. 잠시 후 다시 시도하세요.",
@@ -47,7 +49,7 @@
     "step": {
       "init": {
         "title": "SmartThings Find 설정",
-        "description": "현재 인증 방식: `{auth_method}`\n\nSamsung Account 방식은 만료된 웹 세션을 자동 재발급합니다. Cookie 방식에서는 새 Cookie header를 입력할 수 있으며 비워두면 기존 값을 유지합니다.\n\nKeepAlive는 설정값을 기준으로 약간 무작위화해 호출합니다. 기본값은 180초입니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회\n- Active: 위치 업데이트 요청",
+        "description": "현재 인증 방식: `{auth_method}`\n\nCookie 방식에서는 새 Cookie header를 입력할 수 있으며 비워두면 기존 값을 유지합니다. Samsung Account 방식은 최초 전체 콜백 등록에 성공한 기존 구성에서 만료된 웹 세션을 자동 재발급합니다.\n\nKeepAlive는 설정값을 기준으로 약간 무작위화해 호출합니다. 기본값은 180초입니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회\n- Active: 위치 업데이트 요청",
         "data": {
           "cookie": "새 Cookie header (선택사항)",
           "update_interval": "업데이트 간격 (초)",
