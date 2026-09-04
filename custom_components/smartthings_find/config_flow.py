@@ -10,11 +10,8 @@ from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import selector
 
-from .account_auth import SamsungAccountAuth, SamsungAccountAuthError
-from .account_callback import (
-    SamsungAccountCallbackError,
-    SamsungAccountCallbackUnavailable,
-)
+from .account_auth import SamsungAccountAuth
+from .auth_input import has_samsung_account_cookie_markers
 from .const import (
     AUTH_METHOD_ACCOUNT,
     AUTH_METHOD_COOKIE,
@@ -26,12 +23,9 @@ from .const import (
     CONF_COOKIE,
     CONF_KEEPALIVE_INTERVAL,
     CONF_KEEPALIVE_INTERVAL_DEFAULT,
-    CONF_REDIRECT_URI,
     CONF_UPDATE_INTERVAL,
     CONF_UPDATE_INTERVAL_DEFAULT,
-    DEFAULT_AUTH_METHOD,
     DOMAIN,
-    SAMSUNG_ACCOUNT_SIGN_IN_COMPLETE_URL,
     STF_BASE_URL,
 )
 from .device_inventory import get_devices
@@ -66,24 +60,6 @@ def _mode_selector() -> selector.SelectSelector:
             options=[
                 selector.SelectOptionDict(value=_MODE_PASSIVE, label="패시브"),
                 selector.SelectOptionDict(value=_MODE_ACTIVE, label="액티브"),
-            ],
-        ),
-    )
-
-
-def _auth_method_selector() -> selector.SelectSelector:
-    return selector.SelectSelector(
-        selector.SelectSelectorConfig(
-            mode=selector.SelectSelectorMode.DROPDOWN,
-            options=[
-                selector.SelectOptionDict(
-                    value=AUTH_METHOD_COOKIE,
-                    label="Cookie header (기본·일반 PC 권장)",
-                ),
-                selector.SelectOptionDict(
-                    value=AUTH_METHOD_ACCOUNT,
-                    label="Samsung Account (실험적·전체 콜백 필요)",
-                ),
             ],
         ),
     )
@@ -186,11 +162,15 @@ async def _async_validate_cookie(
 
 
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Configure SmartThings Find with desktop-safe or advanced authentication."""
+    """Configure SmartThings Find with its web Cookie header.
+
+    New Samsung Account enrollment is intentionally unavailable. Entries that
+    completed the old native-app flow remain supported by the runtime until the
+    user reconfigures or reauthenticates them with a SmartThings Find cookie.
+    """
 
     VERSION = 1
     _stf_entry_id: str | None = None
-    _account_login_url: str | None = None
     _is_reconfigure = False
 
     def _entry(self):
@@ -222,10 +202,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data=data,
                 options=options,
             )
-            if (
-                old_method == AUTH_METHOD_ACCOUNT
-                and data.get(CONF_AUTH_METHOD) != AUTH_METHOD_ACCOUNT
-            ):
+            if old_method == AUTH_METHOD_ACCOUNT:
                 await SamsungAccountAuth(self.hass).async_remove()
             await self.hass.config_entries.async_reload(entry.entry_id)
             return self.async_abort(
@@ -248,142 +225,22 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Choose the authentication method."""
+        """Start the supported Cookie header setup directly."""
         if self._stf_entry_id is None:
             await self.async_set_unique_id("smartthings_find")
             self._abort_if_unique_id_configured()
-
-        if self._stf_entry_id is not None and not self._is_reconfigure:
-            entry = self._entry()
-            method = (
-                str(entry.data.get(CONF_AUTH_METHOD) or AUTH_METHOD_COOKIE)
-                if entry
-                else DEFAULT_AUTH_METHOD
-            )
-            if method == AUTH_METHOD_ACCOUNT:
-                return await self.async_step_account()
-            return await self.async_step_cookie()
-
-        if user_input is not None:
-            method = str(
-                user_input.get(CONF_AUTH_METHOD) or DEFAULT_AUTH_METHOD
-            )
-            if method == AUTH_METHOD_ACCOUNT:
-                return await self.async_step_account()
-            return await self.async_step_cookie()
-
-        entry = self._entry()
-        default_method = (
-            str(entry.data.get(CONF_AUTH_METHOD) or AUTH_METHOD_COOKIE)
-            if entry
-            else DEFAULT_AUTH_METHOD
-        )
-        return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_AUTH_METHOD,
-                        default=default_method,
-                    ): _auth_method_selector(),
-                }
-            ),
-        )
-
-    async def async_step_account(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Complete the optional native-app Samsung Account login flow."""
-        errors: dict[str, str] = {}
-        account_auth = SamsungAccountAuth(self.hass)
-
-        if user_input is not None:
-            regenerate_login_url = False
-            try:
-                cookie_line = await account_auth.async_complete(
-                    str(user_input.get(CONF_REDIRECT_URI) or "")
-                )
-                devices = await _async_validate_cookie(
-                    self.hass,
-                    cookie_line,
-                    "config_flow_account",
-                )
-                if not devices:
-                    errors["base"] = "no_devices"
-                    regenerate_login_url = True
-                else:
-                    return await self._finish(
-                        data={CONF_AUTH_METHOD: AUTH_METHOD_ACCOUNT},
-                        options=_options_from_input(user_input),
-                    )
-            except SamsungAccountCallbackUnavailable:
-                # A bare signInComplete page contains no callback material and
-                # does not consume the pending one-time login state.
-                errors[CONF_REDIRECT_URI] = "callback_unavailable"
-            except SamsungAccountCallbackError:
-                errors[CONF_REDIRECT_URI] = "invalid_callback"
-                regenerate_login_url = True
-            except (SamsungAccountAuthError, ConfigEntryAuthFailed):
-                errors["base"] = "invalid_auth"
-                regenerate_login_url = True
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.error(
-                    "Samsung Account config flow failed (%s)",
-                    type(err).__name__,
-                )
-                errors["base"] = "cannot_connect"
-                regenerate_login_url = True
-
-            # A callback passed to samsung-re-find can consume or invalidate its
-            # pending state. Issue a new one-time URL only in those cases; a bare
-            # completion page is rejected locally and may still be retried.
-            if regenerate_login_url:
-                self._account_login_url = None
-
-        if self._account_login_url is None:
-            country = str(getattr(self.hass.config, "country", None) or "US")
-            language = str(getattr(self.hass.config, "language", None) or "en")
-            locale = (
-                language if "-" in language else f"{language}-{country}"
-            )
-            try:
-                self._account_login_url = await account_auth.async_start(
-                    country=country,
-                    locale=locale,
-                )
-            except SamsungAccountAuthError:
-                errors["base"] = "cannot_connect"
-                self._account_login_url = None
-
-        schema_fields: dict[Any, Any] = {
-            vol.Required(CONF_REDIRECT_URI): selector.TextSelector(
-                selector.TextSelectorConfig(
-                    multiline=True,
-                    type=selector.TextSelectorType.TEXT,
-                )
-            )
-        }
-        schema_fields.update(_settings_fields(self._existing_options()))
-        return self.async_show_form(
-            step_id="account",
-            data_schema=vol.Schema(schema_fields),
-            description_placeholders={
-                "login_url": self._account_login_url or "",
-                "completion_url": SAMSUNG_ACCOUNT_SIGN_IN_COMPLETE_URL,
-            },
-            errors=errors,
-        )
+        return await self.async_step_cookie(user_input)
 
     async def async_step_cookie(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Configure the desktop-safe manually copied Cookie header mode."""
+        """Configure or renew the SmartThings Find Cookie header."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
             cookie_line = str(user_input.get(CONF_COOKIE) or "").strip()
+            parsed_cookies = parse_cookie_header(cookie_line)
             try:
                 devices = await _async_validate_cookie(
                     self.hass,
@@ -401,7 +258,11 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         options=_options_from_input(user_input),
                     )
             except ConfigEntryAuthFailed:
-                errors["base"] = "invalid_auth"
+                errors["base"] = (
+                    "account_cookie_not_supported"
+                    if has_samsung_account_cookie_markers(parsed_cookies)
+                    else "invalid_auth"
+                )
             except Exception as err:  # noqa: BLE001
                 _LOGGER.error(
                     "Cookie config flow failed (%s)",
@@ -429,24 +290,21 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_reauth(
         self,
-        entry_data: dict[str, Any],
+        _entry_data: dict[str, Any],
     ) -> ConfigFlowResult:
-        """Renew the configured authentication method."""
+        """Renew any entry with the supported Cookie header method."""
         self._stf_entry_id = self.context.get("entry_id")
         self._is_reconfigure = False
-        self._account_login_url = None
-        return await self.async_step_user()
+        return await self.async_step_cookie()
 
     async def async_step_reconfigure(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Allow switching between desktop-safe and advanced authentication."""
+        """Reconfigure an entry and migrate legacy auth to Cookie header."""
         self._stf_entry_id = self.context.get("entry_id")
         self._is_reconfigure = True
-        if user_input is not None:
-            return await self.async_step_user(user_input)
-        return await self.async_step_user()
+        return await self.async_step_cookie(user_input)
 
     @staticmethod
     def async_get_options_flow(
@@ -478,6 +336,7 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
             )
 
             if cookie_changed:
+                parsed_cookies = parse_cookie_header(new_cookie)
                 try:
                     devices = await _async_validate_cookie(
                         self.hass,
@@ -487,7 +346,11 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
                     if not devices:
                         errors["base"] = "no_devices"
                 except ConfigEntryAuthFailed:
-                    errors["base"] = "invalid_auth"
+                    errors["base"] = (
+                        "account_cookie_not_supported"
+                        if has_samsung_account_cookie_markers(parsed_cookies)
+                        else "invalid_auth"
+                    )
                 except Exception as err:  # noqa: BLE001
                     _LOGGER.error(
                         "Options cookie validation failed (%s)",
@@ -534,6 +397,5 @@ class SmartThingsFindOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(schema_fields),
-            description_placeholders={"auth_method": auth_method},
             errors=errors,
         )
