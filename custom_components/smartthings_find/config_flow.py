@@ -11,6 +11,10 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import selector
 
 from .account_auth import SamsungAccountAuth, SamsungAccountAuthError
+from .account_callback import (
+    SamsungAccountCallbackError,
+    SamsungAccountCallbackUnavailable,
+)
 from .const import (
     AUTH_METHOD_ACCOUNT,
     AUTH_METHOD_COOKIE,
@@ -25,7 +29,9 @@ from .const import (
     CONF_REDIRECT_URI,
     CONF_UPDATE_INTERVAL,
     CONF_UPDATE_INTERVAL_DEFAULT,
+    DEFAULT_AUTH_METHOD,
     DOMAIN,
+    SAMSUNG_ACCOUNT_SIGN_IN_COMPLETE_URL,
     STF_BASE_URL,
 )
 from .device_inventory import get_devices
@@ -71,12 +77,12 @@ def _auth_method_selector() -> selector.SelectSelector:
             mode=selector.SelectSelectorMode.DROPDOWN,
             options=[
                 selector.SelectOptionDict(
-                    value=AUTH_METHOD_ACCOUNT,
-                    label="Samsung Account (자동 세션 복구·권장)",
+                    value=AUTH_METHOD_COOKIE,
+                    label="Cookie header (기본·일반 PC 권장)",
                 ),
                 selector.SelectOptionDict(
-                    value=AUTH_METHOD_COOKIE,
-                    label="Cookie header (수동 호환 모드)",
+                    value=AUTH_METHOD_ACCOUNT,
+                    label="Samsung Account (실험적·전체 콜백 필요)",
                 ),
             ],
         ),
@@ -180,7 +186,7 @@ async def _async_validate_cookie(
 
 
 class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Configure SmartThings Find with persistent or legacy authentication."""
+    """Configure SmartThings Find with desktop-safe or advanced authentication."""
 
     VERSION = 1
     _stf_entry_id: str | None = None
@@ -252,7 +258,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             method = (
                 str(entry.data.get(CONF_AUTH_METHOD) or AUTH_METHOD_COOKIE)
                 if entry
-                else AUTH_METHOD_COOKIE
+                else DEFAULT_AUTH_METHOD
             )
             if method == AUTH_METHOD_ACCOUNT:
                 return await self.async_step_account()
@@ -260,7 +266,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             method = str(
-                user_input.get(CONF_AUTH_METHOD) or AUTH_METHOD_ACCOUNT
+                user_input.get(CONF_AUTH_METHOD) or DEFAULT_AUTH_METHOD
             )
             if method == AUTH_METHOD_ACCOUNT:
                 return await self.async_step_account()
@@ -270,7 +276,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         default_method = (
             str(entry.data.get(CONF_AUTH_METHOD) or AUTH_METHOD_COOKIE)
             if entry
-            else AUTH_METHOD_ACCOUNT
+            else DEFAULT_AUTH_METHOD
         )
         return self.async_show_form(
             step_id="user",
@@ -288,11 +294,12 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Complete Samsung Account login and store renewable credentials."""
+        """Complete the optional native-app Samsung Account login flow."""
         errors: dict[str, str] = {}
         account_auth = SamsungAccountAuth(self.hass)
 
         if user_input is not None:
+            regenerate_login_url = False
             try:
                 cookie_line = await account_auth.async_complete(
                     str(user_input.get(CONF_REDIRECT_URI) or "")
@@ -304,23 +311,35 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 if not devices:
                     errors["base"] = "no_devices"
+                    regenerate_login_url = True
                 else:
                     return await self._finish(
                         data={CONF_AUTH_METHOD: AUTH_METHOD_ACCOUNT},
                         options=_options_from_input(user_input),
                     )
+            except SamsungAccountCallbackUnavailable:
+                # A bare signInComplete page contains no callback material and
+                # does not consume the pending one-time login state.
+                errors[CONF_REDIRECT_URI] = "callback_unavailable"
+            except SamsungAccountCallbackError:
+                errors[CONF_REDIRECT_URI] = "invalid_callback"
+                regenerate_login_url = True
             except (SamsungAccountAuthError, ConfigEntryAuthFailed):
                 errors["base"] = "invalid_auth"
+                regenerate_login_url = True
             except Exception as err:  # noqa: BLE001
                 _LOGGER.error(
                     "Samsung Account config flow failed (%s)",
                     type(err).__name__,
                 )
                 errors["base"] = "cannot_connect"
+                regenerate_login_url = True
 
-            # A callback attempt can consume or invalidate pending state. Always
-            # issue a new one-time URL before the form is shown again.
-            self._account_login_url = None
+            # A callback passed to samsung-re-find can consume or invalidate its
+            # pending state. Issue a new one-time URL only in those cases; a bare
+            # completion page is rejected locally and may still be retried.
+            if regenerate_login_url:
+                self._account_login_url = None
 
         if self._account_login_url is None:
             country = str(getattr(self.hass.config, "country", None) or "US")
@@ -351,6 +370,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema(schema_fields),
             description_placeholders={
                 "login_url": self._account_login_url or "",
+                "completion_url": SAMSUNG_ACCOUNT_SIGN_IN_COMPLETE_URL,
             },
             errors=errors,
         )
@@ -359,7 +379,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Configure the legacy manually copied Cookie header mode."""
+        """Configure the desktop-safe manually copied Cookie header mode."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -421,7 +441,7 @@ class SmartThingsFindConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self,
         user_input: dict[str, Any] | None = None,
     ) -> ConfigFlowResult:
-        """Allow switching between renewable and legacy authentication."""
+        """Allow switching between desktop-safe and advanced authentication."""
         self._stf_entry_id = self.context.get("entry_id")
         self._is_reconfigure = True
         if user_input is not None:

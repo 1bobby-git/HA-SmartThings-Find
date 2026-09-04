@@ -1,5 +1,16 @@
 # 변경 이력
 
+## 1.4.1 - 2026-09-04
+
+- 일반 PC에서 재현 가능한 Cookie header 방식을 신규 설치 기본값으로 복원했습니다.
+- Samsung Account 방식은 전체 `ms-app://` 콜백을 실제로 얻을 수 있는 환경에서만 선택하는 실험적 고급 옵션으로 변경했습니다.
+- `https://account.samsung.com/accounts/ANDROIDSDK/signInComplete` 기본 주소만 입력한 경우 인증에 필요한 `state`, `code`, `auth_server_url`, `retValue`가 없음을 구분해 정확한 안내를 표시합니다.
+- 전체 `ms-app://` 콜백이 브라우저 오류 문구에 포함된 경우 자동 추출하며, 필수 인증 매개변수가 포함된 `signInComplete` URL과 원시 매개변수 블록도 정규화해 처리합니다.
+- 누락된 콜백 값을 Home Assistant가 다른 PC 브라우저에서 가져올 수 있는 것처럼 안내하던 문구를 제거했습니다.
+- 기존 Samsung Account 구성과 저장된 장기 인증은 변경하지 않으며 자동 웹 세션 재발급 기능도 유지합니다.
+- Cookie 방식의 회전 쿠키 저장, CSRF 복구, 인증 요청 직렬화, 180초 기본 KeepAlive 및 ±12% 시간 분산을 그대로 유지합니다.
+- 콜백 형식·보안 경계·신규 설치 기본값을 검증하는 단위 테스트를 추가했습니다.
+
 ## 1.4.0 - 2026-09-04
 
 - Samsung Account 지속 인증을 기본 로그인 방식으로 추가했습니다.

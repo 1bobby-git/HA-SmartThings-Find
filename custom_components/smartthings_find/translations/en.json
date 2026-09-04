@@ -3,16 +3,16 @@
     "step": {
       "user": {
         "title": "SmartThings Find",
-        "description": "Choose an authentication method. **Samsung Account** is recommended because it can automatically issue a new web session from locally stored renewable authorization when the web cookie expires. The manually copied Cookie header remains available for compatibility.",
+        "description": "The default method for a normal desktop PC is **Cookie header**. Rotated-cookie persistence, CSRF recovery, and keepalive still apply. **Samsung Account** is an experimental advanced option only for environments that actually expose the complete `ms-app://` callback.",
         "data": {
           "auth_method": "Authentication method"
         }
       },
       "account": {
-        "title": "Samsung Account sign-in",
-        "description": "1. [Open the Samsung Account sign-in page]({login_url})\n2. Complete Samsung sign-in and any second-factor prompt.\n3. When the browser reaches an `ms-app://...` address or reports that it cannot open the app, copy the **complete address**.\n4. Paste that address below.\n\nYour password and second factor are handled by Samsung and are not provided to this integration. Renewable authorization is kept in private files under Home Assistant `.storage` and is used only to renew tokens and the web session.\n\n**Mode**\n- Passive: read the cached server location (lower battery impact)\n- Active: request a location update first (fresher, higher battery impact)",
+        "title": "Samsung Account sign-in (experimental)",
+        "description": "This method is not guaranteed to work on a normal desktop PC. Samsung's native-app sign-in uses a fixed `ms-app://` callback, while common browsers such as Chrome and Edge may show only `{completion_url}` without exposing the complete callback.\n\n1. [Open the Samsung Account sign-in page]({login_url})\n2. Complete Samsung sign-in and any second-factor prompt.\n3. Paste a **complete `ms-app://...?state=...` address**, an error message containing that address, or a parameterized `signInComplete` address only when your environment actually exposes it.\n4. If the address ends at `{completion_url}`, it contains no authorization data and cannot be used. Go back and select **Cookie header**.\n\nHome Assistant cannot read another PC browser's session or reconstruct missing callback values. Your password and second factor are handled by Samsung. Automatic web-session renewal becomes available only after initial enrollment succeeds with a complete callback.\n\n**Mode**\n- Passive: read the cached server location (lower battery impact)\n- Active: request a location update first (fresher, higher battery impact)",
         "data": {
-          "redirect_uri": "Complete ms-app:// address after sign-in",
+          "redirect_uri": "Complete sign-in callback (bare signInComplete URL is insufficient)",
           "update_interval": "Update interval (seconds)",
           "keepalive_interval": "Session keepalive interval (seconds)",
           "mode_smarttags": "SmartTag mode",
@@ -20,8 +20,8 @@
         }
       },
       "cookie": {
-        "title": "Cookie header compatibility mode",
-        "description": "1) Sign in at {stf_url}\n2) DevTools (F12) → Network\n3) Select `chkLogin.do`\n4) Copy the complete `Cookie:` request header and paste it below.\n\nThis mode still requires a newly copied cookie when Samsung fully revokes the server session. Samsung Account authentication is recommended for unattended operation.\n\n**Mode**\n- Passive: read the cached server location\n- Active: request a location update first",
+        "title": "Cookie header (default)",
+        "description": "1) Sign in at {stf_url}\n2) DevTools (F12) → Network\n3) Select `chkLogin.do`\n4) Copy the complete `Cookie:` request header and paste it below.\n\nThis is the reproducible default on a normal desktop PC. Server-rotated cookies are saved privately, and CSRF recovery plus jittered keepalive remain enabled. A newly copied Cookie header is still required if Samsung fully revokes the server session.\n\n**Mode**\n- Passive: read the cached server location\n- Active: request a location update first",
         "data": {
           "cookie": "Cookie header",
           "update_interval": "Update interval (seconds)",
@@ -32,7 +32,9 @@
       }
     },
     "error": {
-      "invalid_auth": "Authentication failed. Use the new sign-in link again or verify the Cookie header.",
+      "callback_unavailable": "The supplied signInComplete address contains no authentication result. Samsung Account enrollment cannot use this URL alone; go back and select Cookie header.",
+      "invalid_callback": "The callback is unsupported or missing required values such as state and code. Start a new sign-in and provide the complete callback.",
+      "invalid_auth": "Authentication failed. Start again with a new sign-in link or verify the Cookie header.",
       "no_devices": "No devices were found for this account.",
       "cannot_connect": "Unable to connect to Samsung authentication or SmartThings Find. Try again later.",
       "unknown": "Unexpected error."
@@ -47,7 +49,7 @@
     "step": {
       "init": {
         "title": "SmartThings Find options",
-        "description": "Current authentication method: `{auth_method}`\n\nSamsung Account mode automatically rebuilds an expired web session. Cookie mode allows a replacement Cookie header; leave it empty to retain the current value.\n\nKeepalive calls use slight timing jitter around the configured interval. The default is 180 seconds.\n\n**Mode**\n- Passive: read the cached server location\n- Active: request a location update first",
+        "description": "Current authentication method: `{auth_method}`\n\nCookie mode allows a replacement Cookie header; leave it empty to retain the current value. Samsung Account mode can rebuild an expired web session for an existing entry whose initial enrollment succeeded with a complete callback.\n\nKeepalive calls use slight timing jitter around the configured interval. The default is 180 seconds.\n\n**Mode**\n- Passive: read the cached server location\n- Active: request a location update first",
         "data": {
           "cookie": "New Cookie header (optional)",
           "update_interval": "Update interval (seconds)",
