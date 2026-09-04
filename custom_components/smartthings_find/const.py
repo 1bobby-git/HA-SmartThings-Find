@@ -15,6 +15,17 @@ STF_DEVICE_LIST_PATH: Final = "device/getDeviceList.do"
 STF_SET_LAST_DEVICE_PATH: Final = "device/setLastSelect.do"
 STF_ADD_OPERATION_PATH: Final = "dm/addOperation.do"
 
+# Samsung's native-app account flow is pinned to this callback. A desktop
+# browser often exposes only the HTTPS completion page, which is not enough
+# unless the encrypted callback fields are present in its query or fragment.
+SAMSUNG_ACCOUNT_SIGN_IN_COMPLETE_URL: Final = (
+    "https://account.samsung.com/accounts/ANDROIDSDK/signInComplete"
+)
+SAMSUNG_ACCOUNT_APP_REDIRECT_URI: Final = (
+    "ms-app://s-1-15-2-4027708247-2189610-1983755848-2937435718-"
+    "1578786913-2158692839-1974417358"
+)
+
 # ----------------------------
 # Timing constants (seconds)
 # ----------------------------
@@ -31,6 +42,7 @@ LOCATION_POLL_DELAYS: Final[tuple[int, ...]] = (15, 30, 45)
 CONF_AUTH_METHOD: Final = "auth_method"
 AUTH_METHOD_ACCOUNT: Final = "samsung_account"
 AUTH_METHOD_COOKIE: Final = "cookie"
+DEFAULT_AUTH_METHOD: Final = AUTH_METHOD_COOKIE
 CONF_REDIRECT_URI: Final = "redirect_uri"
 CONF_COOKIE: Final = "cookie"
 
