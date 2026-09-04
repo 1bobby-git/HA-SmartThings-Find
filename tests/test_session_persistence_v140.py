@@ -150,6 +150,28 @@ class SessionPersistenceV140Tests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("removed=stale", loaded)
 
+    async def test_empty_authoritative_jar_does_not_restore_configured_seed(self) -> None:
+        hass = types.SimpleNamespace(data={})
+        entry = _Entry("seed=one")
+
+        await session_store.persist_cookie_to_store(
+            hass,
+            entry,
+            _Session({"seed": "one", "JSESSIONID": "old"}),
+        )
+        await session_store.persist_cookie_to_store(
+            hass,
+            entry,
+            _Session({}),
+        )
+
+        # Use a fresh runtime cache to prove that the empty marker was written
+        # to persistent storage rather than held only in memory.
+        restarted_hass = types.SimpleNamespace(data={})
+        loaded = await session_store.async_load_cookie_line(restarted_hass, entry)
+
+        self.assertEqual("", loaded)
+
     async def test_account_auth_session_is_persisted_without_manual_cookie_seed(self) -> None:
         hass = types.SimpleNamespace(data={})
         entry = _Entry("", session_store.AUTH_METHOD_ACCOUNT)
