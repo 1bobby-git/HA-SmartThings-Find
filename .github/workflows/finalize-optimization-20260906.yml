@@ -1,0 +1,79 @@
+name: Finalize verified optimization release
+"on":
+  push:
+    branches: [release/finalize-optimization-20260906]
+    paths: [.github/workflows/finalize-optimization-20260906.yml]
+permissions: {}
+concurrency:
+  group: finalize-optimization-1.4.3
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.repository == '1bobby-git/HA-SmartThings-Find'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4be00dd580a3214ab495ca46ee85992d55a8ddd5
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install and verify the existing authentication dependency
+        run: |
+          python -m pip install --disable-pip-version-check 'samsung-re-find==0.2.2' pytest
+          python -c 'from samsung_find.auth import SamsungAuth; print(SamsungAuth.__name__)'
+      - name: Compile and run native tests
+        run: |
+          python -m compileall -q custom_components/smartthings_find
+          python -m unittest discover -s tests
+          python -m pytest -q tests --junitxml="$RUNNER_TEMP/release-tests.xml"
+      - name: HACS
+        uses: hacs/action@main
+        with:
+          category: integration
+      - name: Hassfest
+        uses: home-assistant/actions/hassfest@master
+      - name: Preserve test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finalization-tests
+          path: ${{ runner.temp }}/release-tests.xml
+          if-no-files-found: error
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4be00dd580a3214ab495ca46ee85992d55a8ddd5
+          persist-credentials: false
+      - name: Read pinned publisher outside release source
+        uses: actions/checkout@v4
+        with:
+          repository: 1bobby-git/HA-iOS-ANCS
+          ref: 496ae790c8f528b8d73e0d443e0d33f8c5615bea
+          path: .release-helper
+          sparse-checkout: .optimization-release
+          persist-credentials: false
+      - name: Verify every release asset and publish by ID
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: 1bobby-git/HA-SmartThings-Find
+          RELEASE_COMMIT: 4be00dd580a3214ab495ca46ee85992d55a8ddd5
+          RELEASE_VERSION: '1.4.3'
+          RELEASE_DOMAIN: smartthings_find
+          RELEASE_TAG: v1.4.3
+          RELEASE_ID: '383405316'
+        run: python .release-helper/.optimization-release/finalize.py
+      - name: Preserve publication evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: publication-evidence
+          path: ${{ runner.temp }}/release-result.json
+          if-no-files-found: error
