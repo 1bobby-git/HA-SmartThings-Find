@@ -49,6 +49,25 @@ jobs:
           PYTHONPATH="$PWD" python "$RUNNER_TEMP/optimization-unittest.py" tests "$RUNNER_TEMP/optimization-baseline.xml"
       - name: Apply exact source patches and update documentation
         run: python "$RUNNER_TEMP/optimization-deploy.py" apply
+      - name: Align existing release version contract
+        run: |
+          python - <<'PY'
+          import ast, hashlib, json, os
+          from pathlib import Path
+          p = Path('tests/test_authentication_surface.py')
+          raw = p.read_bytes()
+          assert hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == '551852b1132ef63548a7d4bb5299a6988f06d450'
+          text = raw.decode()
+          for old, new in [('def test_release_version_is_1_4_2(', 'def test_release_version_is_1_4_3('), ('self.assertEqual("1.4.2", manifest["version"])', 'self.assertEqual("1.4.3", manifest["version"])')]:
+              assert text.count(old) == 1
+              text = text.replace(old, new)
+          ast.parse(text)
+          p.write_text(text)
+          state_path = Path(os.environ['RUNNER_TEMP']) / 'optimization-state.json'
+          state = json.loads(state_path.read_text())
+          state['paths'] = sorted(set(state['paths'] + [str(p)]))
+          state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + '\n')
+          PY
       - name: Test complete patched integration
         run: |
           python -m compileall -q custom_components/smartthings_find
