@@ -1,0 +1,92 @@
+name: Deploy optimization 20260906
+on:
+  push:
+    branches: [release/optimization-20260906]
+    paths: [.github/workflows/deploy-optimization-20260906.yml]
+permissions:
+  contents: write
+concurrency:
+  group: deploy-optimization-20260906
+  cancel-in-progress: false
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      PATCH_SPEC: >-
+        {"repository":"1bobby-git/HA-SmartThings-Find","branch":"main","base_version":"1.4.2","candidate_version":"1.4.3","summary":["계정별 쿠키 저장 직렬화: 동시 호출의 중복 디스크 쓰기·오래된 스냅샷 덮어쓰기 방지","세션 파일 삭제 전에 진행 중인 저장 완료 대기","서버가 삭제한 쿠키를 부활시키지 않으며 인증·재로그인·물리 명령 재시도 정책은 유지"],"changes":[{"path":"custom_components/smartthings_find/session_store.py","git_blob_sha1":"6f0137fa6e8d35d48732c47353f0023c9184ac0d","old":"from hashlib import sha256\n","new":"import asyncio\nfrom hashlib import sha256\n"},{"path":"custom_components/smartthings_find/session_store.py","git_blob_sha1":"6f0137fa6e8d35d48732c47353f0023c9184ac0d","old":"async def persist_cookie_to_store(\n    hass: HomeAssistant,\n    entry: Any,\n    session: aiohttp.ClientSession,\n) -> None:\n","new":"def _cookie_store_lock(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:\n    \"\"\"Serialize snapshots per entry without blocking other accounts.\"\"\"\n    runtime = _runtime_data(hass, entry_id)\n    lock = runtime.get(\"_session_cookie_store_lock\")\n    if lock is None:\n        lock = asyncio.Lock()\n        runtime[\"_session_cookie_store_lock\"] = lock\n    return lock\n\n\nasync def persist_cookie_to_store(\n    hass: HomeAssistant,\n    entry: Any,\n    session: aiohttp.ClientSession,\n) -> None:\n    \"\"\"Take the latest jar snapshot only after earlier writes have finished.\"\"\"\n    async with _cookie_store_lock(hass, entry.entry_id):\n        await _persist_cookie_to_store_locked(hass, entry, session)\n\n\nasync def _persist_cookie_to_store_locked(\n    hass: HomeAssistant,\n    entry: Any,\n    session: aiohttp.ClientSession,\n) -> None:\n"},{"path":"custom_components/smartthings_find/session_store.py","git_blob_sha1":"6f0137fa6e8d35d48732c47353f0023c9184ac0d","old":"async def async_remove_session_store(\n    hass: HomeAssistant,\n    entry_id: str,\n) -> None:\n","new":"async def async_remove_session_store(\n    hass: HomeAssistant,\n    entry_id: str,\n) -> None:\n    \"\"\"Wait for in-flight writes before deleting a session snapshot.\"\"\"\n    async with _cookie_store_lock(hass, entry_id):\n        await _async_remove_session_store_locked(hass, entry_id)\n\n\nasync def _async_remove_session_store_locked(\n    hass: HomeAssistant,\n    entry_id: str,\n) -> None:\n"},{"path":"custom_components/smartthings_find/manifest.json","git_blob_sha1":"749bb51f8e874ff88f94ddb3af9bb6845aab437e","old":"\"version\": \"1.4.2\"","new":"\"version\": \"1.4.3\""}]}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: 1bobby-git/HA-iOS-ANCS
+          ref: d5c58703029ea8cfbff4cfd335c59fc49d3fbe98
+          path: .release-helper
+          sparse-checkout: .optimization-release
+          persist-credentials: false
+      - name: Keep helpers outside release source
+        run: |
+          cp .release-helper/.optimization-release/deploy.py "$RUNNER_TEMP/optimization-deploy.py"
+          cp .release-helper/.optimization-release/unittest_report.py "$RUNNER_TEMP/optimization-unittest.py"
+          rm -rf .release-helper
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check source hashes, version and branch protections
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python "$RUNNER_TEMP/optimization-deploy.py" check
+      - name: Verify persistent authentication dependency
+        run: |
+          python -m pip install --disable-pip-version-check 'samsung-re-find==0.2.2'
+          python -c 'from samsung_find.auth import SamsungAuth; print(SamsungAuth.__name__)'
+      - name: Test unchanged baseline
+        run: |
+          python -m compileall -q custom_components/smartthings_find
+          PYTHONPATH="$PWD" python "$RUNNER_TEMP/optimization-unittest.py" tests "$RUNNER_TEMP/optimization-baseline.xml"
+      - name: Apply exact source patches and update documentation
+        run: python "$RUNNER_TEMP/optimization-deploy.py" apply
+      - name: Test complete patched integration
+        run: |
+          python -m compileall -q custom_components/smartthings_find
+          PYTHONPATH="$PWD" python "$RUNNER_TEMP/optimization-unittest.py" tests "$RUNNER_TEMP/optimization-patched.xml"
+      - name: Validate local brand assets
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import struct
+          root = Path('custom_components/smartthings_find/brand')
+          expected = {'icon.png': (256,256), 'icon@2x.png': (512,512), 'logo.png': None, 'logo@2x.png': None, 'dark_logo.png': None, 'dark_logo@2x.png': None}
+          for name, size in expected.items():
+              data = (root/name).read_bytes()
+              assert data[:8] == b'\x89PNG\r\n\x1a\n' and data[12:16] == b'IHDR', name
+              width, height = struct.unpack('>II', data[16:24])
+              if size:
+                  assert (width,height) == size, name
+              if 'logo' in name:
+                  low, high = (256,512) if '@2x' in name else (128,256)
+                  assert low <= min(width,height) <= high, name
+          PY
+      - name: HACS validation
+        uses: hacs/action@main
+        with:
+          category: integration
+      - name: Hassfest validation
+        uses: home-assistant/actions/hassfest@master
+      - name: Publish verified commit, tag and release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python "$RUNNER_TEMP/optimization-deploy.py" publish
+      - name: Preserve validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: optimization-validation
+          path: |
+            ${{ runner.temp }}/optimization-baseline.xml
+            ${{ runner.temp }}/optimization-patched.xml
+            ${{ runner.temp }}/optimization-result.json
+          if-no-files-found: ignore
