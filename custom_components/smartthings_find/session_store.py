@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from hashlib import sha256
 import logging
 from typing import Any
@@ -170,7 +171,27 @@ def _cookie_line_from_session(session: aiohttp.ClientSession) -> str:
     )
 
 
+def _cookie_store_lock(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:
+    """Serialize snapshots per entry without blocking other accounts."""
+    runtime = _runtime_data(hass, entry_id)
+    lock = runtime.get("_session_cookie_store_lock")
+    if lock is None:
+        lock = asyncio.Lock()
+        runtime["_session_cookie_store_lock"] = lock
+    return lock
+
+
 async def persist_cookie_to_store(
+    hass: HomeAssistant,
+    entry: Any,
+    session: aiohttp.ClientSession,
+) -> None:
+    """Take the latest jar snapshot only after earlier writes have finished."""
+    async with _cookie_store_lock(hass, entry.entry_id):
+        await _persist_cookie_to_store_locked(hass, entry, session)
+
+
+async def _persist_cookie_to_store_locked(
     hass: HomeAssistant,
     entry: Any,
     session: aiohttp.ClientSession,
@@ -207,6 +228,15 @@ async def persist_cookie_to_store(
 
 
 async def async_remove_session_store(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> None:
+    """Wait for in-flight writes before deleting a session snapshot."""
+    async with _cookie_store_lock(hass, entry_id):
+        await _async_remove_session_store_locked(hass, entry_id)
+
+
+async def _async_remove_session_store_locked(
     hass: HomeAssistant,
     entry_id: str,
 ) -> None:

@@ -262,3 +262,11 @@ logger:
 
 - Original upstream: `Vedeneb/HA-SmartThings-Find` (archived / read-only)
 - Legacy Samsung Account runtime compatibility: `charlesbel/samsung-re-find` (MIT)
+
+## 통합 업데이트 1.4.3
+
+- 계정별 쿠키 저장 직렬화: 동시 호출의 중복 디스크 쓰기·오래된 스냅샷 덮어쓰기 방지
+- 세션 파일 삭제 전에 진행 중인 저장 완료 대기
+- 서버가 삭제한 쿠키를 부활시키지 않으며 인증·재로그인·물리 명령 재시도 정책은 유지
+
+변경 내용, 검증 범위 및 롤백 방법: [최적화 문서](docs/OPTIMIZATION_2026-09-06.md). 펌웨어·브리지 앱은 변경하지 않으며, 운영 HA 설치·실기기 검증은 별도입니다.
