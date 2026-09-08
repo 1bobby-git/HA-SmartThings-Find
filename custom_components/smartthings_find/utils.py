@@ -140,17 +140,25 @@ async def _fetch_csrf_once(
         text = (await resp.text()).strip()
         csrf = resp.headers.get("_csrf")
 
-        _LOGGER.debug("chkLogin.do status=%s csrf=%s body=%s", resp.status, bool(csrf), text[:200])
+        _LOGGER.debug("chkLogin.do status=%s csrf=%s", resp.status, bool(csrf))
+
+        # A rate limit or upstream outage says nothing about cookie validity.
+        # Preserve the connection-error path instead of triggering auth retries
+        # and eventually requesting replacement credentials.
+        if resp.status == 429 or resp.status >= 500:
+            raise HomeAssistantError(
+                f"SmartThings Find temporarily unavailable (HTTP {resp.status})"
+            )
 
         # STF는 200 + body 'fail' 로도 만료를 표현함
         if resp.status == 401 or text in ("fail", "Logout"):
             raise ConfigEntryAuthFailed(
-                f"SmartThings Find session invalid/expired (chkLogin.do returned {resp.status} but body='{text}')"
+                f"SmartThings Find session invalid/expired (HTTP {resp.status})"
             )
 
         if resp.status != 200 or not csrf:
             raise ConfigEntryAuthFailed(
-                f"CSRF token not found. status={resp.status}, csrf={bool(csrf)}, body='{text[:120]}'"
+                f"CSRF token not found. status={resp.status}, csrf={bool(csrf)}"
             )
 
         if entry_id is not None:

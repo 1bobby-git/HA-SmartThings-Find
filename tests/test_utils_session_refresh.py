@@ -46,6 +46,29 @@ class _FakeSession:
 
 
 class UtilsSessionRefreshTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fetch_csrf_outage_does_not_retry_or_reject_credentials(self) -> None:
+        for status in (429, 500, 502, 503):
+            with self.subTest(status=status):
+                session = _FakeSession([_FakeResponse("private-response", status=status)])
+                hass = types.SimpleNamespace(data={})
+
+                with self.assertRaises(utils.HomeAssistantError) as caught:
+                    await utils.fetch_csrf(hass, session, "entry-id", retry_delays=(0,))
+
+                self.assertNotIsInstance(caught.exception, utils.ConfigEntryAuthFailed)
+                self.assertNotIn("private-response", str(caught.exception))
+                self.assertEqual(len(session.get_calls), 1)
+                self.assertNotIn("_csrf", hass.data[utils.DOMAIN]["entry-id"])
+
+    async def test_fetch_csrf_diagnostics_omit_response_body(self) -> None:
+        session = _FakeSession([_FakeResponse("private-response", status=403)])
+        hass = types.SimpleNamespace(data={})
+        with self.assertLogs(utils.__name__, level="DEBUG") as captured:
+            with self.assertRaises(utils.ConfigEntryAuthFailed) as caught:
+                await utils.fetch_csrf(hass, session, retry_delays=())
+        self.assertNotIn("private-response", str(caught.exception))
+        self.assertNotIn("private-response", "\n".join(captured.output))
+
     async def test_fetch_csrf_retries_a_transient_logout_without_reauth(self) -> None:
         session = _FakeSession(
             [
