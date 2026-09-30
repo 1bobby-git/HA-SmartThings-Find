@@ -53,14 +53,15 @@ def _mode_to_bool(value: str) -> bool:
     return value == _MODE_ACTIVE
 
 
+_MODE_SELECTOR_TRANSLATION_KEY = "device_mode"
+
+
 def _mode_selector() -> selector.SelectSelector:
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
             mode=selector.SelectSelectorMode.DROPDOWN,
-            options=[
-                selector.SelectOptionDict(value=_MODE_PASSIVE, label="패시브"),
-                selector.SelectOptionDict(value=_MODE_ACTIVE, label="액티브"),
-            ],
+            translation_key=_MODE_SELECTOR_TRANSLATION_KEY,
+            options=[_MODE_PASSIVE, _MODE_ACTIVE],
         ),
     )
 
@@ -151,7 +152,11 @@ async def _async_validate_cookie(
     session = make_session(hass)
     apply_cookies_to_session(session, cookies)
     try:
-        await fetch_csrf(hass, session, context_id)
+        # During interactive setup a freshly copied cookie is either valid
+        # immediately or wrong; retrying an auth rejection here only produces a
+        # confusing repeated "temporarily rejected authentication" log and a
+        # slow form. Fail fast so the user gets a clear invalid_auth result.
+        await fetch_csrf(hass, session, context_id, retry_delays=())
         return await get_devices(hass, session, context_id)
     finally:
         try:

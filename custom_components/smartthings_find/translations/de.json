@@ -50,5 +50,13 @@
       "no_devices": "Keine Geräte im Konto gefunden.",
       "cannot_connect": "Verbindung zu SmartThings Find fehlgeschlagen. Bitte später erneut versuchen."
     }
+  },
+  "selector": {
+    "device_mode": {
+      "options": {
+        "passive": "Passiv",
+        "active": "Aktiv"
+      }
+    }
   }
 }

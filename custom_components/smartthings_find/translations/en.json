@@ -50,5 +50,13 @@
       "no_devices": "No devices were found for this account.",
       "cannot_connect": "Unable to connect to SmartThings Find. Try again later."
     }
+  },
+  "selector": {
+    "device_mode": {
+      "options": {
+        "passive": "Passive",
+        "active": "Active"
+      }
+    }
   }
 }

@@ -50,5 +50,13 @@
       "no_devices": "계정에서 기기를 찾지 못했습니다.",
       "cannot_connect": "SmartThings Find 연결에 실패했습니다. 잠시 후 다시 시도하세요."
     }
+  },
+  "selector": {
+    "device_mode": {
+      "options": {
+        "passive": "패시브",
+        "active": "액티브"
+      }
+    }
   }
 }
