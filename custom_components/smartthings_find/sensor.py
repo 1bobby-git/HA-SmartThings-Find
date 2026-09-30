@@ -46,7 +46,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     entities: list[SensorEntity] = []
     for dev in devices:
-        entities.append(SmartThingsFindBatterySensor(coordinator, dev))
+        # WEARABLE devices (e.g. Galaxy Watch) never expose a battery level in
+        # the SmartThings Find REST snapshot: the CHECK_CONNECTION result only
+        # arrives over MQTT, which this integration does not implement. Creating
+        # the battery sensor would leave it stuck at "unknown" forever and look
+        # like a broken integration, so skip it for wearables. See issue #7.
+        if str((dev.get("data") or {}).get("deviceTypeCode") or "").upper() != "WEARABLE":
+            entities.append(SmartThingsFindBatterySensor(coordinator, dev))
         entities.append(SmartThingsFindLastUpdateSensor(coordinator, dev))
     async_add_entities(entities)
 

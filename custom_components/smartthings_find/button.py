@@ -238,14 +238,22 @@ class UpdateLocationButton(_STFOperationButton):
         location = (result or {}).get("used_loc") or {}
         return location.get("gps_date")
 
+    def _is_wearable(self) -> bool:
+        return str(self.device.get("deviceTypeCode") or "").upper() == "WEARABLE"
+
     async def async_press(self) -> None:
         coordinator = self.hass.data[DOMAIN][self._entry_id].get(DATA_COORDINATOR)
+        # WEARABLE devices only report a fresh server timestamp over MQTT, which
+        # this integration does not implement. Waiting on the 15/30/45 s poll
+        # would always end in a "timeout" result, so send the wake request and
+        # refresh once without marking a pending server-time fetch. See issue #7.
+        wearable = self._is_wearable()
         old_gps_date = self._get_current_server_gps_date()
-        if coordinator is not None:
+        if coordinator is not None and not wearable:
             coordinator.mark_pending_last_update(self._dvce_id, old_gps_date)
 
         if not await self._post_operation(OP_CHECK_CONNECTION_WITH_LOCATION):
-            if coordinator is not None:
+            if coordinator is not None and not wearable:
                 mark_failed = getattr(coordinator, "mark_last_update_failed", None)
                 if callable(mark_failed):
                     mark_failed(self._dvce_id)
@@ -254,7 +262,7 @@ class UpdateLocationButton(_STFOperationButton):
             self._raise_command_failed("location update")
 
         await self._kick_refresh()
-        if coordinator is not None:
+        if coordinator is not None and not wearable:
             self._create_background_task(
                 self._poll_server_last_update(coordinator),
                 f"smartthings_find_location_poll_{self._dvce_id}",
