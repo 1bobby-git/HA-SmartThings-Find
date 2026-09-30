@@ -107,6 +107,13 @@ account.samsung.com의 JSESSIONID
 Cookie: JSESSIONID=...; WMONID=...; ...
 ```
 
+입력값은 자동으로 정규화되므로 아래 형식도 허용됩니다.
+
+- 앞뒤에 따옴표(`"..."`)가 붙은 경우
+- 여러 줄로 줄바꿈되거나 탭이 섞여 복사된 경우
+- 같은 쿠키 이름이 중복된 경우(마지막 값을 사용)
+- 브라우저 확장에서 내보낸 JSON 쿠키(배열 또는 객체)
+
 `JSESSIONID` 하나만 임의로 복사하지 말고 `chkLogin.do` 요청의 전체 Cookie 헤더를 사용하세요.
 
 ### 아이폰 사용자
@@ -217,6 +224,10 @@ Home Assistant → 설정 → 디바이스 및 서비스 → SmartThings Find �
 
 해당 주소를 입력할 필요가 없습니다. Samsung Account 콜백 방식은 신규 설정에서 제거되었습니다. SmartThings Find Cookie 방식으로 설정하세요.
 
+### 인증에 실패하고 로그에 `temporarily rejected authentication`이 반복됨
+
+`smartthingsfind.samsung.com`의 `chkLogin.do` 요청에서 **전체 Cookie 헤더**를 복사했는지 확인하세요. 설정 화면의 Cookie 검증은 잘못된 쿠키에 대해 즉시 명확한 인증 오류를 표시합니다. 여전히 실패하면 SmartThings Find 웹사이트에서 로그아웃 후 다시 로그인해 새 세션 쿠키를 복사하세요. 일부 브라우저에서 값이 잘리는 경우 PC의 Chrome, Edge 또는 Firefox에서 다시 시도하세요.
+
 ### 계속 Unavailable
 
 1. SmartThings Find 웹사이트에서 동일 계정의 기기 목록이 정상 표시되는지 확인
@@ -227,6 +238,8 @@ Home Assistant → 설정 → 디바이스 및 서비스 → SmartThings Find �
 ### 배터리가 Unknown
 
 일부 기기는 웹 응답에서 배터리를 제공하지 않습니다. 특히 이어버드는 계정·모델 상태에 따라 배터리가 누락될 수 있습니다.
+
+**Galaxy Watch 등 웨어러블(WEARABLE)**: SmartThings Find 웹 응답(`setLastSelect.do`)에는 워치 배터리가 포함되지 않고 결과가 MQTT로만 전달됩니다. 이 통합은 MQTT를 구현하지 않으므로 워치 배터리를 안정적으로 읽을 수 없습니다. 배터리 센서가 영구히 `unknown`으로 남아 오작동처럼 보이는 것을 막기 위해, 웨어러블 기기에는 배터리 센서를 생성하지 않습니다. 워치의 배터리는 SmartThings Find 웹사이트에서 확인하세요. 웨어러블의 `Update Location` 버튼도 서버 시각이 MQTT로만 갱신되므로 불필요한 폴링 대기 없이 위치 갱신만 요청합니다.
 
 ### Ring이 동작하지 않음
 

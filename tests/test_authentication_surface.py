@@ -131,11 +131,11 @@ class AuthenticationSurfaceTests(unittest.TestCase):
                     data["config"]["error"],
                 )
 
-    def test_release_version_is_1_4_4(self) -> None:
+    def test_release_version_is_1_4_5(self) -> None:
         manifest = json.loads(
             (COMPONENT_DIR / "manifest.json").read_text(encoding="utf-8")
         )
-        self.assertEqual("1.4.4", manifest["version"])
+        self.assertEqual("1.4.5", manifest["version"])
 
 
 if __name__ == "__main__":

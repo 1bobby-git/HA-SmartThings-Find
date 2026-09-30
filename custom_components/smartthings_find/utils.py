@@ -54,19 +54,68 @@ COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _ST_IDENT_PREFIX = "smartthings::"
 
 
+def _cookies_from_json(text: str) -> dict[str, str]:
+    """Parse browser/extension JSON cookie exports (array or object).
+
+    Supports the common EditThisCookie / DevTools shapes:
+      [{"name": "a", "value": "b"}, ...]
+      {"a": "b", ...}
+    Returns an empty dict when the text is not such a JSON export.
+    """
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        return {}
+
+    jar: dict[str, str] = {}
+    if isinstance(parsed, list):
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            value = item.get("value")
+            if isinstance(name, str) and COOKIE_NAME_RE.match(name):
+                jar[name] = "" if value is None else str(value)
+    elif isinstance(parsed, dict):
+        for name, value in parsed.items():
+            if isinstance(name, str) and COOKIE_NAME_RE.match(name):
+                jar[name] = "" if value is None else str(value)
+    return jar
+
+
 def parse_cookie_header(cookie_header_line: str) -> dict[str, str]:
     """
-    Accepts:
-      - "Cookie: a=b; c=d"
-      - "a=b; c=d"
-    Returns dict of cookies safe for aiohttp CookieJar.
+    Accepts a variety of browser copy formats and normalizes them:
+      - "Cookie: a=b; c=d"          (Chrome/Edge/Firefox "Copy value")
+      - "a=b; c=d"                  (raw cookie string)
+      - a header wrapped in single/double quotes
+      - a header copied across several wrapped lines (newlines/tabs)
+      - a JSON cookie export (array of {name,value} objects, or an object)
+    Duplicate cookie names keep the last occurrence. Returns a dict of cookies
+    safe for aiohttp CookieJar. Cookie values are never logged.
     """
     s = (cookie_header_line or "").strip()
     if not s:
         return {}
 
+    # Some browsers/extensions surround "Copy value" output with quotes.
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        s = s[1:-1].strip()
+
+    # A JSON export is unambiguous once the outer quotes are gone.
+    if s[:1] in ("[", "{"):
+        json_jar = _cookies_from_json(s)
+        if json_jar:
+            return json_jar
+
+    # Strip a leading "Cookie:" (or "cookie:") request-header label.
     if s.lower().startswith("cookie:"):
         s = s.split(":", 1)[1].strip()
+
+    # Browsers may wrap the header across multiple lines/tabs on copy. The
+    # header syntax separates cookies with ";", so any embedded newline or tab
+    # is safe to flatten to a single space before splitting.
+    s = re.sub(r"[\r\n\t]+", " ", s)
 
     jar: dict[str, str] = {}
     try:
