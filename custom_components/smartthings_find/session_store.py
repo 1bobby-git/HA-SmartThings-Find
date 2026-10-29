@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from hashlib import sha256
 import logging
 from typing import Any
@@ -17,17 +18,32 @@ from .const import (
     AUTH_METHOD_COOKIE,
     CONF_AUTH_METHOD,
     CONF_COOKIE,
+    DIAG_COOKIE_STORE,
     DOMAIN,
 )
-from .utils import COOKIE_NAME_RE, STF_BASE, parse_cookie_header
+from .utils import (
+    COOKIE_NAME_RE,
+    STF_BASE,
+    STF_HOST,
+    cookie_scope,
+    is_stf_cookie_domain,
+    parse_cookie_header,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 _STORAGE_VERSION = 1
 _STORE_RUNTIME_KEY = "_session_cookie_store"
 _COOKIE_CACHE_KEY = "_session_cookie_cache"
+# Where the cached cookie came from, reported by diagnostics as loaded_from.
+_CACHE_SOURCE_KEY = "_session_cookie_cache_source"
 _SOURCE_HASH_KEY = "source_hash"
 _COOKIE_KEY = "cookie"
+# Cookies the Cookie-header line cannot describe: a parent Domain or a non-root
+# Path. Older releases ignore this key and keep reading the line.
+_SCOPED_KEY = "scoped"
+MAX_SCOPED_COOKIES = 50
+_SCOPED_FIELDS = ("name", "value", "domain", "path")
 
 
 def _configured_cookie(entry: Any) -> str:
@@ -55,6 +71,12 @@ def _source_hash(source: str) -> str:
     return sha256(source.encode("utf-8")).hexdigest()
 
 
+def cookie_source_hash(entry: Any) -> str | None:
+    """Identify the credential a cookie jar is seeded from, without the secret."""
+    source = _source_identity(entry)
+    return _source_hash(source) if source else None
+
+
 def _legacy_source_hash(entry: Any) -> str | None:
     """Return the v1.3.x cookie-store boundary for in-place migration."""
     if _auth_method(entry) != AUTH_METHOD_COOKIE:
@@ -65,6 +87,16 @@ def _legacy_source_hash(entry: Any) -> str | None:
 
 def _runtime_data(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
     return hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})
+
+
+def _record_store_diag(hass: HomeAssistant, entry_id: str, **values: Any) -> None:
+    """Remember cookie store activity for diagnostics: sources, counts, times."""
+    record = _runtime_data(hass, entry_id).setdefault(DIAG_COOKIE_STORE, {})
+    record.update(values)
+
+
+def _now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
 
 
 def _store(hass: HomeAssistant, entry_id: str) -> Store:
@@ -105,19 +137,66 @@ def _stored_cookie_snapshot(
     return cookie_line
 
 
+def _valid_scoped_record(record: Any) -> dict[str, str] | None:
+    if not isinstance(record, dict):
+        return None
+    values = {field: record.get(field) for field in _SCOPED_FIELDS}
+    if not all(isinstance(value, str) for value in values.values()):
+        return None
+    if not COOKIE_NAME_RE.match(values["name"]):
+        return None
+    if any(char in values["value"] for char in ";\r\n"):
+        return None
+    if not values["path"].startswith("/") or not is_stf_cookie_domain(values["domain"]):
+        return None
+    return values
+
+
+def _stored_scoped_cookies(payload: Any) -> list[dict[str, str]]:
+    raw = payload.get(_SCOPED_KEY) if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        return []
+    records: list[dict[str, str]] = []
+    for item in raw:
+        record = _valid_scoped_record(item)
+        if record is not None:
+            records.append(record)
+        if len(records) >= MAX_SCOPED_COOKIES:
+            break
+    return records
+
+
 async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
     """Load a rotated cookie only when it belongs to this auth source."""
+    cookie_line, _scoped = await async_load_session_cookies(hass, entry)
+    return cookie_line
+
+
+async def async_load_session_cookies(
+    hass: HomeAssistant,
+    entry: Any,
+) -> tuple[str, list[dict[str, str]]]:
+    """Load the rotated cookie line and its domain/path-scoped cookies."""
     source = _source_identity(entry)
     fallback = _fallback_cookie(entry)
     if not source:
-        return fallback
+        return fallback, []
 
     source_hash = _source_hash(source)
     runtime = _runtime_data(hass, entry.entry_id)
     cached = runtime.get(_COOKIE_CACHE_KEY)
     cached_cookie = _stored_cookie_snapshot(cached, {source_hash})
     if cached_cookie is not None:
-        return cached_cookie
+        # Setup retries and session rebuilds reuse the cache; report what it
+        # holds now, which is the saved session once a rotation was stored.
+        _record_store_diag(
+            hass,
+            entry.entry_id,
+            loaded_from=runtime.get(_CACHE_SOURCE_KEY) or "saved_session",
+            load_error=None,
+            loaded_at=_now_iso(),
+        )
+        return cached_cookie, _stored_scoped_cookies(cached)
 
     try:
         stored = await _store(hass, entry.entry_id).async_load()
@@ -126,7 +205,14 @@ async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
             "Unable to load the private SmartThings Find session store: %s",
             type(err).__name__,
         )
-        return fallback
+        _record_store_diag(
+            hass,
+            entry.entry_id,
+            loaded_from="configured_cookie" if fallback else "none",
+            load_error=type(err).__name__,
+            loaded_at=_now_iso(),
+        )
+        return fallback, []
 
     legacy_hash = _legacy_source_hash(entry)
     accepted_hashes: set[str | None] = {source_hash}
@@ -137,11 +223,15 @@ async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
         accepted_hashes,
     )
     if stored_cookie is not None:
-        payload = {
+        scoped = _stored_scoped_cookies(stored)
+        payload: dict[str, Any] = {
             _SOURCE_HASH_KEY: source_hash,
             _COOKIE_KEY: stored_cookie,
         }
+        if scoped:
+            payload[_SCOPED_KEY] = scoped
         runtime[_COOKIE_CACHE_KEY] = payload
+        runtime[_CACHE_SOURCE_KEY] = "saved_session"
         if stored.get(_SOURCE_HASH_KEY) != source_hash:
             try:
                 await _store(hass, entry.entry_id).async_save(payload)
@@ -150,13 +240,34 @@ async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
                     "Unable to migrate the legacy session-store boundary (%s)",
                     type(err).__name__,
                 )
-        return stored_cookie
+        _record_store_diag(
+            hass,
+            entry.entry_id,
+            loaded_from="saved_session",
+            load_error=None,
+            loaded_at=_now_iso(),
+        )
+        return stored_cookie, scoped
 
     runtime[_COOKIE_CACHE_KEY] = {
         _SOURCE_HASH_KEY: source_hash,
         _COOKIE_KEY: fallback,
     }
-    return fallback
+    runtime[_CACHE_SOURCE_KEY] = "configured_cookie" if fallback else "none"
+    _record_store_diag(
+        hass,
+        entry.entry_id,
+        loaded_from=runtime[_CACHE_SOURCE_KEY],
+        load_error=None,
+        loaded_at=_now_iso(),
+    )
+    return fallback, []
+
+
+def _wire_value(morsel: Any) -> str:
+    """Return the value as sent on the wire, quotes included."""
+    coded = getattr(morsel, "coded_value", None)
+    return str(coded if isinstance(coded, str) and coded else morsel.value)
 
 
 def _cookie_line_from_session(session: aiohttp.ClientSession) -> str:
@@ -164,11 +275,55 @@ def _cookie_line_from_session(session: aiohttp.ClientSession) -> str:
     current: dict[str, str] = {}
     for name, morsel in session.cookie_jar.filter_cookies(STF_BASE).items():
         if COOKIE_NAME_RE.match(name):
-            current[name] = morsel.value
+            current[name] = _wire_value(morsel)
 
     return "; ".join(
         f"{name}={value}" for name, value in sorted(current.items())
     )
+
+
+def _scoped_cookies_from_session(session: aiohttp.ClientSession) -> list[dict[str, str]]:
+    """Describe cookies whose Domain or Path the Cookie-header line would lose.
+
+    Parent-domain cookies on ``/`` stay in the line as well, so a downgrade keeps
+    sending them; restoring both is reconciled by ``normalize_cookie_jar``. A
+    host-only root cookie is recorded only when it has a parent-domain twin: the
+    server set it, and a restore must keep it instead of treating it as a seed.
+    """
+    try:
+        morsels = list(session.cookie_jar)
+    except TypeError:
+        return []
+
+    candidates: list[tuple[Any, str, str, str]] = []
+    parent_root: set[str] = set()
+    for morsel in morsels:
+        name = getattr(morsel, "key", "")
+        if not isinstance(name, str) or not COOKIE_NAME_RE.match(name):
+            continue
+        domain, path = cookie_scope(morsel)
+        if not is_stf_cookie_domain(domain):
+            continue
+        if path == "/" and domain != STF_HOST:
+            parent_root.add(name)
+        candidates.append((morsel, name, domain, path))
+
+    records: dict[tuple[str, str, str], dict[str, str]] = {}
+    for morsel, name, domain, path in candidates:
+        if (domain, path) == (STF_HOST, "/") and name not in parent_root:
+            continue
+        record = _valid_scoped_record(
+            {"name": name, "value": _wire_value(morsel), "domain": domain, "path": path}
+        )
+        if record is not None:
+            records[(domain, path, name)] = record
+
+    def _priority(key: tuple[str, str, str]) -> tuple[bool, tuple[str, str, str]]:
+        # Host-only twins only refine a parent cookie, so path cookies keep
+        # their slots under the cap first.
+        return (key[:2] == (STF_HOST, "/"), key)
+
+    return [records[key] for key in sorted(records, key=_priority)][:MAX_SCOPED_COOKIES]
 
 
 def _cookie_store_lock(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:
@@ -185,16 +340,27 @@ async def persist_cookie_to_store(
     hass: HomeAssistant,
     entry: Any,
     session: aiohttp.ClientSession,
+    *,
+    seeded_source_hash: str | None = None,
 ) -> None:
-    """Take the latest jar snapshot only after earlier writes have finished."""
+    """Take the latest jar snapshot only after earlier writes have finished.
+
+    ``seeded_source_hash`` is the ``cookie_source_hash`` of the credential the
+    jar was seeded from. When the entry's credential has changed since (a
+    reauth, reconfigure or options flow), the jar is not saved, so the next
+    setup starts from the newly entered cookie instead of the replaced one.
+    """
     async with _cookie_store_lock(hass, entry.entry_id):
-        await _persist_cookie_to_store_locked(hass, entry, session)
+        await _persist_cookie_to_store_locked(
+            hass, entry, session, seeded_source_hash
+        )
 
 
 async def _persist_cookie_to_store_locked(
     hass: HomeAssistant,
     entry: Any,
     session: aiohttp.ClientSession,
+    seeded_source_hash: str | None = None,
 ) -> None:
     """Persist the current effective jar in ``.storage``.
 
@@ -207,12 +373,21 @@ async def _persist_cookie_to_store_locked(
     source = _source_identity(entry)
     if not source:
         return
+    source_hash = _source_hash(source)
+    if seeded_source_hash is not None and seeded_source_hash != source_hash:
+        _LOGGER.debug(
+            "Skipped saving SmartThings Find cookies seeded from replaced credentials"
+        )
+        return
 
     cookie_line = _cookie_line_from_session(session)
-    payload = {
-        _SOURCE_HASH_KEY: _source_hash(source),
+    payload: dict[str, Any] = {
+        _SOURCE_HASH_KEY: source_hash,
         _COOKIE_KEY: cookie_line,
     }
+    scoped = _scoped_cookies_from_session(session)
+    if scoped:
+        payload[_SCOPED_KEY] = scoped
     runtime = _runtime_data(hass, entry.entry_id)
     cached = runtime.get(_COOKIE_CACHE_KEY)
     if cached == payload:
@@ -220,10 +395,20 @@ async def _persist_cookie_to_store_locked(
 
     await _store(hass, entry.entry_id).async_save(payload)
     runtime[_COOKIE_CACHE_KEY] = payload
+    runtime[_CACHE_SOURCE_KEY] = "saved_session"
+    cookie_count = len(parse_cookie_header(cookie_line))
+    _record_store_diag(
+        hass,
+        entry.entry_id,
+        last_saved=_now_iso(),
+        saved_cookie_count=cookie_count,
+        saved_scoped_count=len(scoped),
+    )
     _LOGGER.debug(
         "Persisted current SmartThings Find cookie jar in private storage "
-        "(cookie_count=%s)",
-        len(parse_cookie_header(cookie_line)),
+        "(cookie_count=%s, scoped_count=%s)",
+        cookie_count,
+        len(scoped),
     )
 
 
@@ -250,3 +435,4 @@ async def _async_remove_session_store_locked(
             type(err).__name__,
         )
     runtime.pop(_COOKIE_CACHE_KEY, None)
+    runtime.pop(_CACHE_SOURCE_KEY, None)

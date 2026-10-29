@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import html
+import functools
 import json
 import logging
 import math
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
-from http.cookies import CookieError, SimpleCookie
+from http.cookies import CookieError, Morsel, SimpleCookie
 from typing import Any, TypeVar
 
 import aiohttp
@@ -16,17 +16,16 @@ from yarl import URL
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
-from homeassistant.helpers import device_registry
-from homeassistant.helpers.device_registry import DeviceInfo
 
 from .const import (
     DOMAIN,
     BATTERY_LEVELS,
     CONF_ACTIVE_MODE_SMARTTAGS,
     CONF_ACTIVE_MODE_OTHERS,
-    CONF_COOKIE,
-    CONF_ST_IDENTIFIER,
-    OP_RING,
+    CONF_COOKIE,  # noqa: F401  re-exported; callers read utils.CONF_COOKIE
+    DIAG_COOKIE_STORE,
+    DIAG_KEEPALIVE,
+    DIAG_LAST_CHK_LOGIN,
     OP_CHECK_CONNECTION,
     OP_CHECK_CONNECTION_WITH_LOCATION,
     STF_BASE_URL,
@@ -48,10 +47,205 @@ URL_DEVICE_LIST = STF_BASE / STF_DEVICE_LIST_PATH
 URL_SET_LAST_DEVICE = STF_BASE / STF_SET_LAST_DEVICE_PATH
 URL_ADD_OPERATION = STF_BASE / STF_ADD_OPERATION_PATH  # requires ?_csrf=
 
+
+def _utc_now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
+
+
+def _entry_runtime(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
+    return hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})
+
+
+def _body_kind(text: str) -> str:
+    """Classify a response body without keeping any of its content."""
+    if text in ("Logout", "fail"):
+        return text
+    if not text:
+        return "empty"
+    if text.lstrip().startswith("<"):
+        return "html"
+    if text[:1] in ("{", "["):
+        return "json"
+    return "text"
+
+
+def record_keepalive(
+    hass: HomeAssistant,
+    entry_id: str,
+    *,
+    error: BaseException | None = None,
+) -> None:
+    """Remember the latest KeepAlive outcome for diagnostics."""
+    state = _entry_runtime(hass, entry_id).setdefault(DIAG_KEEPALIVE, {})
+    if error is None:
+        state["last_success"] = _utc_now_iso()
+    else:
+        state["last_failure"] = _utc_now_iso()
+        state["last_error"] = type(error).__name__
+
+
+def session_evidence(hass: HomeAssistant, entry_id: str) -> str:
+    """Summarize where the cookie came from and what chkLogin.do answered.
+
+    Setup errors carry this line into the Home Assistant log, because the
+    diagnostics download is offered only while the entry is loaded. Only labels,
+    HTTP status codes and host names are included.
+    """
+    runtime = hass.data.get(DOMAIN, {}).get(entry_id) or {}
+    store = runtime.get(DIAG_COOKIE_STORE) or {}
+    parts = [f"cookie source: {store.get('loaded_from') or 'unknown'}"]
+    chk = runtime.get(DIAG_LAST_CHK_LOGIN) or {}
+    if chk:
+        parts.append(f"chkLogin.do: HTTP {chk.get('status')} {chk.get('body')}")
+        if chk.get("redirects"):
+            parts.append(f"redirected to {chk.get('final_host')}")
+    return ", ".join(parts)
+
+
+_LAST_SETUP_EVIDENCE = "_last_setup_evidence"
+
+
+def setup_failure_evidence(hass: HomeAssistant, entry_id: str) -> str:
+    """Return the session summary for a setup error and warn once per new summary.
+
+    Home Assistant logs a setup retry below warning level, so without this the
+    summary would only show as the retry reason on the integrations page.
+    """
+    evidence = session_evidence(hass, entry_id)
+    runtime = _entry_runtime(hass, entry_id)
+    if runtime.get(_LAST_SETUP_EVIDENCE) != evidence:
+        runtime[_LAST_SETUP_EVIDENCE] = evidence
+        _LOGGER.warning(
+            "SmartThings Find could not confirm the web session (%s)", evidence
+        )
+    return evidence
+
+
+def clear_setup_failure_evidence(hass: HomeAssistant, entry_id: str) -> None:
+    """Forget the last setup-error summary after a successful setup."""
+    entry_data = hass.data.get(DOMAIN, {}).get(entry_id)
+    if entry_data is not None:
+        entry_data.pop(_LAST_SETUP_EVIDENCE, None)
+
+
 COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
-# JSON-safe smartthings identifier encoding
-_ST_IDENT_PREFIX = "smartthings::"
+STF_HOST = str(getattr(STF_BASE, "host", None) or "smartthingsfind.samsung.com")
+
+# Runtime key for the cookie values this integration seeded into the jar (the
+# pasted or restored line). It holds secrets and is never read by diagnostics.
+COOKIE_SEEDS_KEY = "_cookie_seeds"
+
+
+def _raw_morsel(name: str, value: str) -> Morsel | str:
+    """Return a Morsel that sends ``value`` exactly as the browser did.
+
+    A plain ``{name: value}`` seed makes aiohttp wrap values containing ``/``,
+    ``+``, ``=`` and similar characters in double quotes, which the browser never
+    does. A Morsel whose coded value is the raw value, sent through the
+    verbatim jar from ``make_session``, keeps the value as pasted, quotes
+    included, on every aiohttp release Home Assistant has shipped.
+    """
+    morsel: Morsel = Morsel()
+    try:
+        morsel.set(name, value, value)
+    except CookieError:
+        return value
+    return morsel
+
+
+def cookie_scope(morsel: Any) -> tuple[str, str]:
+    """Return the (domain, path) a jar morsel applies to."""
+    domain = str(morsel.get("domain") or "").lstrip(".").lower() or STF_HOST
+    path = str(morsel.get("path") or "/") or "/"
+    return domain, path
+
+
+def is_stf_cookie_domain(domain: str) -> bool:
+    """Return true for SmartThings Find's host and samsung.com above it.
+
+    A bare top-level domain such as ``com`` is never a legitimate cookie scope.
+    """
+    if domain == STF_HOST:
+        return True
+    return "." in domain and STF_HOST.endswith("." + domain)
+
+
+def _jar_morsels(session: Any) -> list[Any] | None:
+    jar = getattr(session, "cookie_jar", None)
+    if jar is None:
+        return None
+    try:
+        return list(jar)
+    except TypeError:
+        return None
+
+
+def normalize_cookie_jar(
+    session: Any,
+    seeds: Mapping[str, str] | None = None,
+) -> int:
+    """Drop pasted host-only cookies shadowed by a server-set parent-domain cookie.
+
+    A pasted Cookie header carries no Domain attribute, so every seed becomes a
+    host-only cookie for smartthingsfind.samsung.com. When Samsung later rotates
+    the same cookie with ``Domain=.samsung.com``, aiohttp keeps both and keeps
+    sending the stale host-only value. The parent-domain copy can only come from
+    a server response, so it is newer than the seed.
+
+    ``seeds`` holds the values this integration seeded. When given, a host-only
+    cookie is removed only while it still has its seeded value, so a host-only
+    cookie the server set later is never replaced by an older parent copy.
+    Without ``seeds`` every shadowed host-only copy is removed. Returns the
+    number removed.
+    """
+    morsels = _jar_morsels(session)
+    if not morsels:
+        return 0
+
+    parent_root: set[str] = set()
+    host_root: dict[str, str] = {}
+    for morsel in morsels:
+        domain, path = cookie_scope(morsel)
+        if path != "/" or not is_stf_cookie_domain(domain):
+            continue
+        if domain == STF_HOST:
+            host_root[morsel.key] = morsel.value
+        else:
+            parent_root.add(morsel.key)
+
+    shadowed = {
+        name
+        for name, value in host_root.items()
+        if name in parent_root and (seeds is None or seeds.get(name) == value)
+    }
+    clear = getattr(session.cookie_jar, "clear", None)
+    if not shadowed or not callable(clear):
+        return 0
+
+    clear(
+        lambda morsel: morsel.key in shadowed
+        and cookie_scope(morsel) == (STF_HOST, "/")
+    )
+    _LOGGER.debug(
+        "Dropped %s pasted cookie(s) replaced by Samsung's parent-domain cookie",
+        len(shadowed),
+    )
+    return len(shadowed)
+
+
+def _normalize_seeded_jar(hass: HomeAssistant, session: Any, entry_id: str) -> None:
+    """Reconcile the jar right after a response, before the next request."""
+    seeds = hass.data.get(DOMAIN, {}).get(entry_id, {}).get(COOKIE_SEEDS_KEY)
+    if seeds is None:
+        return
+    try:
+        normalize_cookie_jar(session, seeds)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug(
+            "SmartThings Find cookie jar normalization failed (%s)",
+            type(err).__name__,
+        )
 
 
 def _cookies_from_json(text: str) -> dict[str, str]:
@@ -123,7 +317,9 @@ def parse_cookie_header(cookie_header_line: str) -> dict[str, str]:
         sc.load(s)
         for k, morsel in sc.items():
             if COOKIE_NAME_RE.match(k):
-                jar[k] = morsel.value
+                # The coded value is the token as pasted, quotes included, which
+                # is what the browser sends back.
+                jar[k] = morsel.coded_value
         if jar:
             return jar
     except CookieError:
@@ -146,17 +342,97 @@ def parse_cookie_header(cookie_header_line: str) -> dict[str, str]:
 
 
 def apply_cookies_to_session(session: aiohttp.ClientSession, cookies: dict[str, str]) -> None:
-    """aiohttp requires response_url to be yarl.URL, not str."""
+    """Seed pasted or restored cookies as host-only cookies, values verbatim.
+
+    aiohttp requires response_url to be yarl.URL, not str.
+    """
     if not cookies:
         return
-    session.cookie_jar.update_cookies(cookies, response_url=STF_BASE)
+    session.cookie_jar.update_cookies(
+        {name: _raw_morsel(name, value) for name, value in cookies.items()},
+        response_url=STF_BASE,
+    )
+
+
+def apply_scoped_cookies(
+    session: aiohttp.ClientSession,
+    records: list[dict[str, str]],
+) -> None:
+    """Restore cookies that carry a parent Domain or a non-root Path."""
+    for record in records or ():
+        name = record["name"]
+        morsel = _raw_morsel(name, record["value"])
+        if not isinstance(morsel, Morsel):
+            continue
+        if record["domain"] != STF_HOST:
+            morsel["domain"] = record["domain"]
+        morsel["path"] = record["path"]
+        # One record at a time: several records may share a name.
+        session.cookie_jar.update_cookies({name: morsel}, response_url=STF_BASE)
+
+
+def seed_session_cookies(
+    session: aiohttp.ClientSession,
+    cookies: Mapping[str, str],
+    scoped: list[dict[str, str]] | tuple = (),
+) -> dict[str, str]:
+    """Seed a pasted or restored cookie line and return the values that are seeds.
+
+    A restored snapshot records a host-only root cookie in ``scoped`` only when
+    the server set it next to a parent-domain twin. Such a cookie came from
+    Samsung, so it is not a seed and normalization keeps it, as it did before
+    the restart.
+    """
+    apply_cookies_to_session(session, dict(cookies))
+    if scoped:
+        apply_scoped_cookies(session, list(scoped))
+    server_set = {
+        record["name"]
+        for record in scoped or ()
+        if (record.get("domain"), record.get("path")) == (STF_HOST, "/")
+    }
+    seeds = {name: value for name, value in cookies.items() if name not in server_set}
+    normalize_cookie_jar(session, seeds)
+    return seeds
+
+
+@functools.lru_cache(maxsize=1)
+def _verbatim_cookie_jar_class() -> type:
+    """Build the jar class on first use; tests may run with an aiohttp stub."""
+
+    class VerbatimCookieJar(aiohttp.CookieJar):
+        """Send each cookie value exactly as it was pasted or received.
+
+        ``quote_cookie=False`` stops aiohttp from quoting values that contain
+        ``/``, ``+`` or ``=``. From aiohttp 3.12 it also drops the quotes of a
+        value the server sent quoted, so the received coded value is restored.
+        """
+
+        def filter_cookies(self, request_url, *args, **kwargs):
+            filtered = super().filter_cookies(request_url, *args, **kwargs)
+            received: dict[tuple[str, str], str] = {}
+            for morsel in self:
+                received.setdefault((morsel.key, morsel.value), morsel.coded_value)
+            for name, morsel in list(filtered.items()):
+                coded = received.get((morsel.key, morsel.value))
+                if coded is None or coded == morsel.coded_value:
+                    continue
+                restored: Morsel = Morsel()
+                try:
+                    restored.set(morsel.key, morsel.value, coded)
+                except CookieError:
+                    continue
+                filtered[name] = restored
+            return filtered
+
+    return VerbatimCookieJar
 
 
 def make_session(hass: HomeAssistant) -> aiohttp.ClientSession:
     """Dedicated session (not Home Assistant managed session)."""
     _ = hass  # keep signature for compatibility (unused)
 
-    jar = aiohttp.CookieJar(unsafe=True)
+    jar = _verbatim_cookie_jar_class()(unsafe=True, quote_cookie=False)
 
     # 너무 공격적이지 않게 기본 타임아웃만 설정
     timeout = aiohttp.ClientTimeout(total=30)
@@ -188,8 +464,23 @@ async def _fetch_csrf_once(
     async with session.get(URL_CHK_LOGIN) as resp:
         text = (await resp.text()).strip()
         csrf = resp.headers.get("_csrf")
+        status = resp.status
+        history = getattr(resp, "history", None) or ()
+        final_host = getattr(getattr(resp, "url", None), "host", None)
 
-        _LOGGER.debug("chkLogin.do status=%s csrf=%s", resp.status, bool(csrf))
+        _LOGGER.debug("chkLogin.do status=%s csrf=%s", status, bool(csrf))
+        if entry_id is not None:
+            # chkLogin.do may rotate a seeded cookie with a parent Domain; the
+            # request that follows must already send the rotated value.
+            _normalize_seeded_jar(hass, session, entry_id)
+            hass.data[DOMAIN][entry_id][DIAG_LAST_CHK_LOGIN] = {
+                "status": status,
+                "body": _body_kind(text),
+                "csrf": bool(csrf),
+                "redirects": len(history),
+                "final_host": str(final_host) if final_host else None,
+                "at": _utc_now_iso(),
+            }
 
         # A rate limit or upstream outage says nothing about cookie validity.
         # Preserve the connection-error path instead of triggering auth retries
@@ -285,223 +576,92 @@ def normalize_location_accuracy(value: Any) -> int:
     return int(round(accuracy))
 
 
-async def persist_cookie_to_entry(
-    hass: HomeAssistant,
-    entry,
-    session: aiohttp.ClientSession,
-) -> None:
-    """
-    세션 쿠키가 갱신(JSESSIONID 등)될 수 있으므로,
-    현재 cookie_jar의 쿠키를 entry.data[CONF_COOKIE]에 반영해둔다.
-    """
+def _is_device_list_payload(body: str) -> bool:
     try:
-        existing_line = (entry.data.get(CONF_COOKIE) or "").strip()
-        existing = parse_cookie_header(existing_line)
-
-        jar = session.cookie_jar.filter_cookies(STF_BASE)
-        current: dict[str, str] = {}
-        for k, morsel in jar.items():
-            if COOKIE_NAME_RE.match(k):
-                current[k] = morsel.value
-
-        if not current:
-            return
-
-        merged = dict(existing)
-        merged.update(current)
-
-        # serialize
-        cookie_line = "; ".join([f"{k}={v}" for k, v in merged.items()])
-
-        if cookie_line and cookie_line != existing_line:
-            new_data = dict(entry.data)
-            new_data[CONF_COOKIE] = cookie_line
-            hass.config_entries.async_update_entry(entry, data=new_data)
-            _LOGGER.debug("Persisted updated cookies into config entry (len=%s)", len(cookie_line))
-    except Exception as err:
-        _LOGGER.debug("persist_cookie_to_entry failed: %s", err)
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and isinstance(payload.get("deviceList"), list)
 
 
-async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> None:
-    """
-    브라우저 idle(5~10분) 시 로그아웃되는 케이스 대응:
-    chkLogin만으로 idle 연장이 안될 수 있어,
-    '활동'으로 인정될 가능성이 높은 endpoint(device list)를 추가로 호출.
-    """
-    hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})
-
-    csrf = hass.data[DOMAIN][entry_id].get("_csrf")
-    if not csrf:
-        csrf = await fetch_csrf(hass, session, entry_id)
-
+async def _device_list_ping(session: aiohttp.ClientSession, csrf: str) -> None:
+    """Request the device list like the web client; only a JSON list succeeds."""
     url = URL_DEVICE_LIST.update_query({"_csrf": csrf})
     async with session.post(url, headers={"Accept": "application/json"}, data={}) as resp:
         body = (await resp.text()).strip()
-        # ✅ 쿠키 만료 시 200 OK + body "fail"/"Logout" 반환 케이스 체크
-        if body in ("Logout", "fail"):
-            _LOGGER.warning("keepalive_ping session expired (body=%s), triggering reauth", body)
-            raise ConfigEntryAuthFailed(f"Session expired while keepalive ping: body='{body}'")
-        if resp.status != 200:
-            _LOGGER.debug("keepalive_ping deviceList status=%s body=%s", resp.status, body[:120])
-            if resp.status in (401, 403):
-                raise ConfigEntryAuthFailed(f"Session invalid while keepalive ping: {resp.status} '{body}'")
+        status = resp.status
+
+    if body in ("Logout", "fail"):
+        _LOGGER.warning("KeepAlive found an expired SmartThings Find session (%s)", body)
+        raise ConfigEntryAuthFailed(f"Session expired while keepalive ping: body='{body}'")
+    if status in (401, 403):
+        raise ConfigEntryAuthFailed(f"Session invalid while keepalive ping (HTTP {status})")
+    if status != 200:
+        raise HomeAssistantError(f"SmartThings Find keepalive failed (HTTP {status})")
+    if not _is_device_list_payload(body):
+        _LOGGER.debug(
+            "KeepAlive device list was not JSON (%s, %d bytes)",
+            _body_kind(body),
+            len(body),
+        )
+        raise HomeAssistantError("SmartThings Find keepalive returned an unexpected response")
 
 
-# =========================
-# SmartThings mapping helpers
-# =========================
+def _chk_login_signals_expiry(record: Mapping[str, Any] | None) -> bool:
+    """Return true when chkLogin.do answered with an explicit sign-out signal.
 
-def list_smartthings_devices_for_ui(hass: HomeAssistant) -> list[tuple[str, str]]:
+    ``fail``, ``Logout``, HTTP 401 and any redirect (a signed-in chkLogin.do
+    never redirects; an expired one is sent to a sign-in or landing page) mean
+    the session ended. A page without a CSRF token that chkLogin.do served
+    directly can also be a maintenance page.
     """
-    Returns list of (device_registry_id, label) for SmartThings official devices.
+    if not record:
+        return True
+    if record.get("body") in ("fail", "Logout") or record.get("status") == 401:
+        return True
+    return bool(record.get("redirects"))
+
+
+async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> None:
+    """Confirm the login with chkLogin.do, then keep the web session active.
+
+    chkLogin.do runs on every KeepAlive, also in passive mode where polling never
+    calls it, so the login state is checked as documented and a fresh CSRF token
+    is cached. The device list request is the same activity the web client makes.
+    Only a JSON device list counts as success.
+
+    When chkLogin.do fails while a CSRF token is cached, the device list decides,
+    as it did before 1.4.6: a session that still lists devices is alive, and an
+    expired one fails that request too. When both requests fail without an
+    explicit sign-out signal, for example a maintenance page on both, the
+    failure is temporary rather than an authentication failure.
     """
-    dr = device_registry.async_get(hass)
-    items: list[tuple[str, str]] = []
+    runtime = _entry_runtime(hass, entry_id)
+    cached_csrf = runtime.get("_csrf")
+    try:
+        csrf = await fetch_csrf(hass, session, entry_id, retry_delays=())
+    except Exception as chk_error:
+        if not cached_csrf:
+            raise
+        try:
+            await _device_list_ping(session, cached_csrf)
+        except ConfigEntryAuthFailed:
+            raise
+        except Exception:  # noqa: BLE001
+            if isinstance(chk_error, ConfigEntryAuthFailed) and not (
+                _chk_login_signals_expiry(runtime.get(DIAG_LAST_CHK_LOGIN))
+            ):
+                raise HomeAssistantError(
+                    "SmartThings Find answered neither as signed in nor as signed out"
+                ) from None
+            raise chk_error from None
+        _LOGGER.debug(
+            "chkLogin.do failed (%s) but the session still lists devices",
+            type(chk_error).__name__,
+        )
+        return
 
-    for dev in dr.devices.values():
-        if not dev.identifiers:
-            continue
-        if not any(i[0] == "smartthings" for i in dev.identifiers):
-            continue
-
-        name = dev.name_by_user or dev.name or dev.model or dev.id
-        label = name
-        if dev.model:
-            label = f"{name} ({dev.model})"
-        items.append((dev.id, label))
-
-    items.sort(key=lambda x: x[1].lower())
-    return items
-
-
-def _encode_smartthings_identifier(ident: tuple[str, str]) -> str:
-    if not ident or len(ident) != 2:
-        return ""
-    if ident[0] != "smartthings":
-        return ""
-    return f"{_ST_IDENT_PREFIX}{ident[1]}"
-
-
-def _decode_smartthings_identifier(value: Any) -> tuple[str, str] | None:
-    """
-    Accepts stored option value:
-      - "smartthings::<id>"
-      - "<id>" (tolerate)
-      - ("smartthings", "<id>") legacy
-    """
-    if isinstance(value, (list, tuple)) and len(value) == 2:
-        if value[0] == "smartthings" and isinstance(value[1], str):
-            return ("smartthings", value[1])
-        return None
-
-    if isinstance(value, str):
-        if value.startswith(_ST_IDENT_PREFIX):
-            return ("smartthings", value[len(_ST_IDENT_PREFIX):])
-        if value and "::" not in value:
-            return ("smartthings", value)
-    return None
-
-
-def get_smartthings_identifier_value_by_device_id(hass: HomeAssistant, device_id: str) -> str:
-    """
-    device_registry DeviceEntry.id -> first smartthings identifier -> encoded string
-    """
-    dr = device_registry.async_get(hass)
-    dev = dr.devices.get(device_id)
-    if not dev or not dev.identifiers:
-        return ""
-    st_idents = [i for i in dev.identifiers if i[0] == "smartthings"]
-    if not st_idents:
-        return ""
-    return _encode_smartthings_identifier(st_idents[0])
-
-
-def _find_matching_smartthings_identifiers_by_name(hass: HomeAssistant, name: str) -> set[tuple[str, str]]:
-    """Best-effort fallback if user didn't pick mapping option."""
-    dr = device_registry.async_get(hass)
-    name_norm = (name or "").strip().lower()
-
-    for dev in dr.devices.values():
-        if not dev.name:
-            continue
-        if dev.name.strip().lower() != name_norm:
-            continue
-        for ident in dev.identifiers:
-            if ident and len(ident) == 2 and ident[0] == "smartthings":
-                return set(dev.identifiers)
-
-    return set()
-
-
-async def get_devices(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> list[dict[str, Any]]:
-    """
-    device/getDeviceList.do requires csrf in query string.
-
-    - config_flow에서 entry_id="config_flow"로 호출해도 안전하도록
-      csrf가 없으면 여기서 fetch_csrf를 호출한다.
-    """
-    hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})
-
-    csrf = hass.data[DOMAIN][entry_id].get("_csrf")
-    if not csrf:
-        csrf = await fetch_csrf(hass, session, entry_id)
-
-    url = URL_DEVICE_LIST.update_query({"_csrf": csrf})
-
-    async with session.post(url, headers={"Accept": "application/json"}, data={}) as resp:
-        body = await resp.text()
-        body_stripped = body.strip()
-
-        # ✅ 쿠키 만료 시 200 OK + body "fail"/"Logout" 반환 케이스 체크
-        if body_stripped in ("Logout", "fail"):
-            _LOGGER.warning("get_devices session expired (body=%s), triggering reauth", body_stripped)
-            raise ConfigEntryAuthFailed(f"Session expired while fetching devices: body='{body_stripped}'")
-
-        if resp.status != 200:
-            _LOGGER.error("Failed to retrieve devices [%s]: %s", resp.status, body_stripped[:200])
-            if resp.status in (401, 403):
-                raise ConfigEntryAuthFailed("Session invalid while fetching devices")
-            return []
-
-        data = json.loads(body) if body else {}
-        devices_data = data.get("deviceList", [])
-        devices: list[dict[str, Any]] = []
-
-        dr = device_registry.async_get(hass)
-
-        opt_ident_raw = hass.data.get(DOMAIN, {}).get(entry_id, {}).get(CONF_ST_IDENTIFIER)
-        opt_ident = _decode_smartthings_identifier(opt_ident_raw)
-
-        for d in devices_data:
-            d["modelName"] = html.unescape(html.unescape(d.get("modelName", "")))
-
-            dvce_id = d.get("dvceID")
-            model_name = d.get("modelName") or str(dvce_id) or "SmartThings Find device"
-
-            our_identifier = (DOMAIN, str(dvce_id))
-            identifiers: set[tuple[str, str]] = {our_identifier}
-
-            if opt_ident:
-                identifiers.add(opt_ident)
-            else:
-                identifiers |= _find_matching_smartthings_identifiers_by_name(hass, model_name)
-
-            ha_dev = dr.async_get_device({our_identifier})
-            if ha_dev and ha_dev.disabled:
-                _LOGGER.debug("Ignoring disabled device: %s", model_name)
-                continue
-
-            ha_dev_info = DeviceInfo(
-                identifiers=identifiers,
-                manufacturer="Samsung",
-                name=model_name,
-                model=str(d.get("modelID") or ""),
-                configuration_url=str(STF_BASE),
-            )
-
-            devices.append({"data": d, "ha_dev_info": ha_dev_info})
-
-        return devices
+    await _device_list_ping(session, csrf)
 
 
 def parse_stf_date(datestr: str) -> datetime:
@@ -564,9 +724,17 @@ async def send_operation(
 
     status, text = await _post_json(session, url, payload)
     if status != 200:
-        _LOGGER.error("Operation failed status=%s body=%s payload=%s", status, text[:200], payload)
+        # Never log the payload (account and device identifiers) or the body.
+        _LOGGER.error(
+            "SmartThings Find operation %s failed (HTTP %s, %d response bytes)",
+            payload.get("operation"),
+            status,
+            len(text),
+        )
         if status in (401, 403) or text.strip() in ("Logout", "fail"):
-            raise ConfigEntryAuthFailed(f"Session invalid while sending operation: {status} '{text.strip()}'")
+            raise ConfigEntryAuthFailed(
+                f"Session invalid while sending operation (HTTP {status})"
+            )
         raise HomeAssistantError(f"SmartThings Find operation failed: {status}")
 
 
@@ -611,9 +779,16 @@ async def get_device_location(
                 raise ConfigEntryAuthFailed(f"Session expired while fetching location: body='{text_stripped}'")
 
             if resp.status != 200:
-                _LOGGER.error("[%s] Failed to fetch device data (%s): %s", dev_name, resp.status, text[:200])
+                _LOGGER.error(
+                    "[%s] Failed to fetch device data (HTTP %s, %d response bytes)",
+                    dev_name,
+                    resp.status,
+                    len(text),
+                )
                 if resp.status in (401, 403):
-                    raise ConfigEntryAuthFailed(f"Session invalid while fetching location: {resp.status} '{text_stripped}'")
+                    raise ConfigEntryAuthFailed(
+                        f"Session invalid while fetching location (HTTP {resp.status})"
+                    )
                 return None
 
             data = json.loads(text) if text else {}
@@ -695,22 +870,11 @@ async def get_device_location(
     except ConfigEntryAuthFailed:
         raise
     except Exception as e:
-        _LOGGER.error("[%s] Exception in get_device_location: %s", dev_name, e, exc_info=True)
+        # The exception text can quote coordinates or response content, so
+        # neither the error log nor a debug traceback carries it.
+        _LOGGER.error(
+            "[%s] Unexpected SmartThings Find location response (%s)",
+            dev_name,
+            type(e).__name__,
+        )
         return None
-
-
-async def ring_device(
-    hass: HomeAssistant,
-    session: aiohttp.ClientSession,
-    entry_id: str,
-    dev_data: dict[str, Any],
-    start: bool,
-) -> None:
-    payload = {
-        "dvceId": dev_data.get("dvceID"),
-        "operation": OP_RING,
-        "usrId": dev_data.get("usrId"),
-        "status": "start" if start else "stop",
-        "lockMessage": "SmartThings Find is trying to find this device.",
-    }
-    await send_operation(hass, session, entry_id, payload)

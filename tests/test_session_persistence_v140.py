@@ -82,6 +82,14 @@ def _load_session_store_module():
     utils = types.ModuleType("custom_components.smartthings_find.utils")
     utils.COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
     utils.STF_BASE = "https://smartthingsfind.samsung.com/"
+    utils.STF_HOST = "smartthingsfind.samsung.com"
+    utils.cookie_scope = lambda morsel: (
+        str(morsel.get("domain") or "").lstrip(".").lower() or utils.STF_HOST,
+        str(morsel.get("path") or "/"),
+    )
+    utils.is_stf_cookie_domain = lambda domain: (
+        domain == utils.STF_HOST or utils.STF_HOST.endswith("." + domain)
+    )
     utils.parse_cookie_header = _parse_cookie_header
     sys.modules[utils.__name__] = utils
 

@@ -76,6 +76,12 @@ DATA_DEVICES: Final = "devices"
 # Legacy key retained for compatibility with older runtime data.
 DATA_KEEPALIVE_UNSUB: Final = "keepalive_unsub"
 
+# Runtime records read by diagnostics.py. They never hold cookie values, CSRF
+# tokens, response bodies, account or device identifiers.
+DIAG_LAST_CHK_LOGIN: Final = "_diag_last_chk_login"
+DIAG_KEEPALIVE: Final = "_diag_keepalive"
+DIAG_COOKIE_STORE: Final = "_diag_cookie_store"
+
 # ----------------------------
 # Battery mapping (server response string -> percent)
 # ----------------------------

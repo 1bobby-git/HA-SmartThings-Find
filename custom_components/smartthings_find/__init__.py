@@ -31,7 +31,10 @@ from .session_store import async_remove_session_store
 from .utils import (
     auth_failure_is_persistent,
     clear_auth_failure,
+    clear_setup_failure_evidence,
     make_session,
+    session_evidence,
+    setup_failure_evidence,
 )
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -122,6 +125,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         migrate_registered_identifiers(hass, entry.entry_id, devices)
         entry.async_on_unload(entry.add_update_listener(_async_update_listener))
         clear_auth_failure(hass, entry.entry_id)
+        clear_setup_failure_evidence(hass, entry.entry_id)
         return True
 
     except ConfigEntryAuthFailed as err:
@@ -142,12 +146,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for key in (DATA_SESSION, DATA_AUTH_MANAGER, DATA_COORDINATOR, DATA_DEVICES):
             runtime.pop(key, None)
 
+        # The diagnostics download needs a loaded entry, so setup errors carry
+        # the session evidence (labels and HTTP status only).
         if not auth_failure_is_persistent(hass, entry.entry_id):
+            evidence = setup_failure_evidence(hass, entry.entry_id)
             raise ConfigEntryNotReady(
                 "SmartThings Find authentication is temporarily unavailable; "
-                "automatic session recovery will retry before reauthentication"
+                "automatic session recovery will retry before reauthentication "
+                f"({evidence})"
             ) from err
-        raise
+        evidence = session_evidence(hass, entry.entry_id)
+        raise ConfigEntryAuthFailed(f"{err} ({evidence})") from err
 
     except Exception as err:
         if coordinator is not None:

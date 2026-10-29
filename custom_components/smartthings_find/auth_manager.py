@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 import aiohttp
@@ -21,17 +22,24 @@ from .const import (
     CONF_ACTIVE_MODE_OTHERS,
     CONF_ACTIVE_MODE_SMARTTAGS,
     CONF_AUTH_METHOD,
+    DIAG_COOKIE_STORE,
     DOMAIN,
 )
 from .device_inventory import get_devices
-from .session_store import async_load_cookie_line, persist_cookie_to_store
+from .session_store import (
+    async_load_session_cookies,
+    cookie_source_hash,
+    persist_cookie_to_store,
+)
 from .utils import (
-    apply_cookies_to_session,
+    COOKIE_SEEDS_KEY,
     clear_auth_failure,
     fetch_csrf,
     get_device_location,
     keepalive_ping,
+    normalize_cookie_jar,
     parse_cookie_header,
+    seed_session_cookies,
     send_operation,
 )
 
@@ -65,6 +73,15 @@ class SmartThingsFindAuthManager:
             if self._auth_method == AUTH_METHOD_ACCOUNT
             else None
         )
+        # Credential the jar was last seeded from; saving is skipped once the
+        # entry's credential no longer matches it.
+        self._seeded_source_hash: str | None = None
+        # Setup always starts from the credentials already saved by a reauth,
+        # reconfigure or options flow. The flow's "replacing credentials" guard
+        # must not outlive it: when the entry was not loaded during the flow no
+        # unload ran, and a stale guard would stop every later cookie rotation
+        # from being saved, so the next restart fell back to the pasted cookie.
+        self._entry_runtime().pop("_auth_reconfiguring", None)
 
     @property
     def auth_method(self) -> str:
@@ -79,7 +96,15 @@ class SmartThingsFindAuthManager:
     def _clear_csrf(self) -> None:
         self._entry_runtime().pop("_csrf", None)
 
-    def _replace_cookies(self, cookie_line: str) -> None:
+    def _remember_seed_source(self) -> None:
+        """Bind the next jar seed to the entry's current credential."""
+        self._seeded_source_hash = cookie_source_hash(self.entry)
+
+    def _replace_cookies(
+        self,
+        cookie_line: str,
+        scoped: list[dict[str, str]] | tuple = (),
+    ) -> None:
         cookies = parse_cookie_header(cookie_line)
         if not cookies:
             raise ConfigEntryAuthFailed("invalid_cookie_snapshot")
@@ -87,7 +112,8 @@ class SmartThingsFindAuthManager:
         clear = getattr(self.session.cookie_jar, "clear", None)
         if callable(clear):
             clear()
-        apply_cookies_to_session(self.session, cookies)
+        seeds = seed_session_cookies(self.session, cookies, list(scoped))
+        self._entry_runtime()[COOKIE_SEEDS_KEY] = seeds
 
     async def _fetch_csrf_locked(
         self,
@@ -114,19 +140,44 @@ class SmartThingsFindAuthManager:
                 "samsung_account_session_rebuild_failed"
             ) from err
 
-    async def _restore_cookie_snapshot_locked(self) -> str:
-        cookie_line = await async_load_cookie_line(self.hass, self.entry)
+    async def _restore_cookie_snapshot_locked(
+        self,
+    ) -> tuple[str, list[dict[str, str]]]:
+        self._remember_seed_source()
+        cookie_line, scoped = await async_load_session_cookies(self.hass, self.entry)
         if not parse_cookie_header(cookie_line):
             raise ConfigEntryAuthFailed("missing_cookie")
-        return cookie_line
+        return cookie_line, scoped
 
 
     async def _persist_best_effort_locked(self) -> None:
+        try:
+            # Reconcile cookies Samsung rotated with a parent Domain before the
+            # next request, even while a flow is replacing the credentials.
+            normalize_cookie_jar(
+                self.session, self._entry_runtime().get(COOKIE_SEEDS_KEY)
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug(
+                "SmartThings Find cookie jar normalization failed (%s)",
+                type(err).__name__,
+            )
         if self._entry_runtime().get("_auth_reconfiguring"):
             return
         try:
-            await persist_cookie_to_store(self.hass, self.entry, self.session)
+            await persist_cookie_to_store(
+                self.hass,
+                self.entry,
+                self.session,
+                seeded_source_hash=self._seeded_source_hash,
+            )
         except Exception as err:  # noqa: BLE001
+            self._entry_runtime().setdefault(DIAG_COOKIE_STORE, {}).update(
+                {
+                    "last_save_error": type(err).__name__,
+                    "last_save_error_at": datetime.now(tz=timezone.utc).isoformat(),
+                }
+            )
             _LOGGER.debug(
                 "SmartThings Find cookie persistence failed (%s)",
                 type(err).__name__,
@@ -134,12 +185,14 @@ class SmartThingsFindAuthManager:
 
     async def _rebuild_session_locked(self) -> None:
         """Replace the web session and obtain a fresh CSRF token."""
+        scoped: list[dict[str, str]] = []
         if self._auth_method == AUTH_METHOD_ACCOUNT:
+            self._remember_seed_source()
             cookie_line = await self._account_cookie_locked(force_refresh=True)
         else:
-            cookie_line = await self._restore_cookie_snapshot_locked()
+            cookie_line, scoped = await self._restore_cookie_snapshot_locked()
 
-        self._replace_cookies(cookie_line)
+        self._replace_cookies(cookie_line, scoped)
         try:
             await self._fetch_csrf_locked(retry_delays=AUTH_RETRY_DELAYS)
         except ConfigEntryAuthFailed:
@@ -155,9 +208,10 @@ class SmartThingsFindAuthManager:
     async def async_initialize(self) -> None:
         """Restore the best available session and validate it before setup."""
         async with self._lock:
-            snapshot = await async_load_cookie_line(self.hass, self.entry)
+            self._remember_seed_source()
+            snapshot, scoped = await async_load_session_cookies(self.hass, self.entry)
             if parse_cookie_header(snapshot):
-                self._replace_cookies(snapshot)
+                self._replace_cookies(snapshot, scoped)
                 try:
                     await self._fetch_csrf_locked(retry_delays=(2, 5))
                     await self._persist_best_effort_locked()
@@ -196,10 +250,16 @@ class SmartThingsFindAuthManager:
         """Run an idempotent read with bounded authentication recovery."""
         async with self._lock:
             try:
-                result = await operation()
-            except ConfigEntryAuthFailed:
+                try:
+                    result = await operation()
+                except ConfigEntryAuthFailed:
+                    await self._persist_best_effort_locked()
+                    result = await self._repair_csrf_and_retry_locked(operation)
+            except Exception:
+                # Keep cookies rotated by the requests that did succeed, for
+                # example chkLogin.do before a failed device list.
                 await self._persist_best_effort_locked()
-                result = await self._repair_csrf_and_retry_locked(operation)
+                raise
 
             await self._persist_best_effort_locked()
             clear_auth_failure(self.hass, self.entry.entry_id)

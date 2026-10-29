@@ -13,7 +13,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .auth_manager import SmartThingsFindAuthManager
 from .const import CONF_KEEPALIVE_INTERVAL_DEFAULT, KEEPALIVE_JITTER_RATIO
-from .utils import auth_failure_is_persistent, clear_auth_failure
+from .utils import auth_failure_is_persistent, clear_auth_failure, record_keepalive
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -93,6 +93,12 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self._async_keepalive()
             except asyncio.CancelledError:
                 raise
+            except Exception as err:  # noqa: BLE001
+                # One failed iteration must never end the session keepalive.
+                _LOGGER.warning(
+                    "SmartThings Find KeepAlive iteration failed: %s",
+                    type(err).__name__,
+                )
 
     async def _async_keepalive(self) -> None:
         """Ping SmartThings Find and rebuild an expired web session when possible."""
@@ -100,6 +106,7 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.auth_manager.async_keepalive()
             clear_auth_failure(self.hass, self.entry.entry_id)
         except ConfigEntryAuthFailed as err:
+            record_keepalive(self.hass, self.entry.entry_id, error=err)
             if auth_failure_is_persistent(self.hass, self.entry.entry_id):
                 _LOGGER.warning(
                     "Authentication recovery failed continuously; starting reauth: %s",
@@ -111,8 +118,36 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     "Authentication recovery is temporarily unavailable; keeping "
                     "the entry loaded for another retry"
                 )
+            return
         except Exception as err:  # noqa: BLE001
+            record_keepalive(self.hass, self.entry.entry_id, error=err)
             _LOGGER.debug("KeepAlive failed: %s", type(err).__name__)
+            return
+
+        record_keepalive(self.hass, self.entry.entry_id)
+        if self.polling_stopped_by_auth_failure():
+            # Home Assistant stops scheduling refreshes after ConfigEntryAuthFailed.
+            # A successful KeepAlive proves the session works again, so one
+            # refresh restores the schedule instead of leaving entities stale.
+            # The debounced request merges with a refresh a button already asked
+            # for, so active mode never sends two wake requests back to back.
+            _LOGGER.info(
+                "SmartThings Find session works again; resuming location updates"
+            )
+            try:
+                await self.async_request_refresh()
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug(
+                    "Resuming location updates failed: %s", type(err).__name__
+                )
+
+    def polling_stopped_by_auth_failure(self) -> bool:
+        """Return true while Home Assistant holds polling after an auth failure."""
+        return not self.last_update_success and isinstance(
+            self.last_exception, ConfigEntryAuthFailed
+        )
 
     async def async_shutdown(self) -> None:
         """Stop keepalive and coordinator tasks."""
