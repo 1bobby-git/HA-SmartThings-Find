@@ -95,7 +95,10 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise
             except Exception as err:  # noqa: BLE001
                 # One failed iteration must never end the session keepalive.
-                _LOGGER.debug("KeepAlive iteration failed: %s", type(err).__name__)
+                _LOGGER.warning(
+                    "SmartThings Find KeepAlive iteration failed: %s",
+                    type(err).__name__,
+                )
 
     async def _async_keepalive(self) -> None:
         """Ping SmartThings Find and rebuild an expired web session when possible."""

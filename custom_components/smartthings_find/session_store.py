@@ -35,6 +35,8 @@ _LOGGER = logging.getLogger(__name__)
 _STORAGE_VERSION = 1
 _STORE_RUNTIME_KEY = "_session_cookie_store"
 _COOKIE_CACHE_KEY = "_session_cookie_cache"
+# Where the cached cookie came from, reported by diagnostics as loaded_from.
+_CACHE_SOURCE_KEY = "_session_cookie_cache_source"
 _SOURCE_HASH_KEY = "source_hash"
 _COOKIE_KEY = "cookie"
 # Cookies the Cookie-header line cannot describe: a parent Domain or a non-root
@@ -185,6 +187,15 @@ async def async_load_session_cookies(
     cached = runtime.get(_COOKIE_CACHE_KEY)
     cached_cookie = _stored_cookie_snapshot(cached, {source_hash})
     if cached_cookie is not None:
+        # Setup retries and session rebuilds reuse the cache; report what it
+        # holds now, which is the saved session once a rotation was stored.
+        _record_store_diag(
+            hass,
+            entry.entry_id,
+            loaded_from=runtime.get(_CACHE_SOURCE_KEY) or "saved_session",
+            load_error=None,
+            loaded_at=_now_iso(),
+        )
         return cached_cookie, _stored_scoped_cookies(cached)
 
     try:
@@ -220,6 +231,7 @@ async def async_load_session_cookies(
         if scoped:
             payload[_SCOPED_KEY] = scoped
         runtime[_COOKIE_CACHE_KEY] = payload
+        runtime[_CACHE_SOURCE_KEY] = "saved_session"
         if stored.get(_SOURCE_HASH_KEY) != source_hash:
             try:
                 await _store(hass, entry.entry_id).async_save(payload)
@@ -241,10 +253,11 @@ async def async_load_session_cookies(
         _SOURCE_HASH_KEY: source_hash,
         _COOKIE_KEY: fallback,
     }
+    runtime[_CACHE_SOURCE_KEY] = "configured_cookie" if fallback else "none"
     _record_store_diag(
         hass,
         entry.entry_id,
-        loaded_from="configured_cookie" if fallback else "none",
+        loaded_from=runtime[_CACHE_SOURCE_KEY],
         load_error=None,
         loaded_at=_now_iso(),
     )
@@ -273,20 +286,31 @@ def _scoped_cookies_from_session(session: aiohttp.ClientSession) -> list[dict[st
     """Describe cookies whose Domain or Path the Cookie-header line would lose.
 
     Parent-domain cookies on ``/`` stay in the line as well, so a downgrade keeps
-    sending them; restoring both is reconciled by ``normalize_cookie_jar``.
+    sending them; restoring both is reconciled by ``normalize_cookie_jar``. A
+    host-only root cookie is recorded only when it has a parent-domain twin: the
+    server set it, and a restore must keep it instead of treating it as a seed.
     """
     try:
         morsels = list(session.cookie_jar)
     except TypeError:
         return []
 
-    records: dict[tuple[str, str, str], dict[str, str]] = {}
+    candidates: list[tuple[Any, str, str, str]] = []
+    parent_root: set[str] = set()
     for morsel in morsels:
         name = getattr(morsel, "key", "")
         if not isinstance(name, str) or not COOKIE_NAME_RE.match(name):
             continue
         domain, path = cookie_scope(morsel)
-        if not is_stf_cookie_domain(domain) or (domain, path) == (STF_HOST, "/"):
+        if not is_stf_cookie_domain(domain):
+            continue
+        if path == "/" and domain != STF_HOST:
+            parent_root.add(name)
+        candidates.append((morsel, name, domain, path))
+
+    records: dict[tuple[str, str, str], dict[str, str]] = {}
+    for morsel, name, domain, path in candidates:
+        if (domain, path) == (STF_HOST, "/") and name not in parent_root:
             continue
         record = _valid_scoped_record(
             {"name": name, "value": _wire_value(morsel), "domain": domain, "path": path}
@@ -365,6 +389,7 @@ async def _persist_cookie_to_store_locked(
 
     await _store(hass, entry.entry_id).async_save(payload)
     runtime[_COOKIE_CACHE_KEY] = payload
+    runtime[_CACHE_SOURCE_KEY] = "saved_session"
     cookie_count = len(parse_cookie_header(cookie_line))
     _record_store_diag(
         hass,
@@ -404,3 +429,4 @@ async def _async_remove_session_store_locked(
             type(err).__name__,
         )
     runtime.pop(_COOKIE_CACHE_KEY, None)
+    runtime.pop(_CACHE_SOURCE_KEY, None)

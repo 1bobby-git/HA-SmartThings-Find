@@ -259,6 +259,22 @@ class CookieStoreDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(reloaded["load_error"])
         self.assertNotIn("secret-session", json.dumps([first, saved, reloaded]))
 
+    async def test_retry_from_the_runtime_cache_reports_the_saved_session(self) -> None:
+        entry = _Entry()
+        hass = types.SimpleNamespace(data={})
+
+        await session_store.async_load_session_cookies(hass, entry)
+        await session_store.persist_cookie_to_store(
+            hass,
+            entry,
+            types.SimpleNamespace(cookie_jar=_CookieLineJar({"JSESSIONID": "rotated"})),
+        )
+        line, _scoped = await session_store.async_load_session_cookies(hass, entry)
+
+        record = hass.data[utils.DOMAIN]["entry-id"][DIAG_COOKIE_STORE]
+        self.assertEqual("JSESSIONID=rotated", line)
+        self.assertEqual("saved_session", record["loaded_from"])
+
     async def test_records_a_storage_failure_on_load(self) -> None:
         _MemoryStore.fail_load = True
         hass = types.SimpleNamespace(data={})

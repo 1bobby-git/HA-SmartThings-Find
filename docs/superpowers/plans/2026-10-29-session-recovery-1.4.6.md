@@ -161,3 +161,10 @@ def normalize_cookie_jar(session) -> int:
 - [ ] CI 매트릭스(Python 3.12 + aiohttp 3.11.18, Python 3.13 + 최신 aiohttp), CHANGELOG·README 문구
 - [ ] Linux: aiohttp 없음 / 3.11.18 / 최신(3.12), 최신(3.13)에서 전체 통과, 새 테스트가 리뷰 전 코드에서 실패
 - [ ] Commit `fix: address review of the SmartThings Find 1.4.6 session fixes`
+
+### Task 11: 2차 리뷰 반영 (설계 8.1절)
+
+- [ ] 실패 테스트: 재시작 뒤 서버 host-only 쌍 유지와 상위 도메인 회전 우선, 대체 판단 경계(점검 페이지·404는 일시 오류, 로그인 리디렉트는 인증 실패, 403 + 정상 기기 목록은 성공), 캐시 재사용 시 쿠키 출처, 실제 auth manager·`async_read`·코디네이터를 거친 KeepAlive 3가지
+- [ ] 구현: `seed_session_cookies`, `scoped` host-only 쌍 기록, `_chk_login_signals_expiry`, 설정 실패 경고, 캐시 출처 기록, 루프 경고, CI 3조합
+- [ ] Linux 전체 통과, 새 테스트가 1차 반영 코드(73d57d8)에서 실패
+- [ ] Commit `fix: keep server-set cookies across restarts and classify ambiguous KeepAlive pages as temporary`

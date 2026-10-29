@@ -192,6 +192,7 @@ v1.4.0 또는 v1.4.1에서 전체 콜백 등록에 성공한 기존 항목은 �
 - KeepAlive마다 `chkLogin.do`로 로그인 상태를 확인하고 새 CSRF를 받음(Passive 모드 포함)
 - 기기 목록 엔드포인트 호출로 실제 세션 활동 유지
 - `chkLogin.do`만 실패하고 기기 목록이 정상으로 오면 세션이 살아 있는 것으로 봄
+- 두 요청 모두 점검 페이지나 404처럼 로그인도 로그아웃도 아닌 응답이면 일시 오류로 처리(`chkLogin.do`의 `fail`·`Logout`·HTTP 401·삼성 로그인 페이지 리디렉트와 기기 목록의 인증 거부는 인증 실패)
 - 기기 목록 JSON이 아닌 응답(로그인 페이지, 서버 오류)은 성공으로 세지 않고, 30분 인증 유예 타이머도 초기화하지 않음
 - 인증 실패로 위치 갱신이 멈춘 상태에서 KeepAlive가 성공하면 위치 갱신을 다시 시작
 - 응답에서 회전된 쿠키를 비공개 저장소에 반영
@@ -235,7 +236,7 @@ Home Assistant → 설정 → 디바이스 및 서비스 → SmartThings Find �
 
 첨부하기 전에 파일 내용을 한 번 확인하세요.
 
-진단 다운로드 메뉴는 통합이 로드된 상태에서만 보입니다. 설정에 실패한 상태(재시도 중, 재인증 필요)에서는 Home Assistant 로그의 설정 오류 줄 끝에 같은 요약이 붙습니다. 예: `(cookie source: saved_session, chkLogin.do: HTTP 200 html, redirected to account.samsung.com)`
+진단 다운로드 메뉴는 통합이 로드된 상태에서만 보입니다. 설정에 실패한 상태(재시도 중, 재인증 필요)에서는 같은 요약이 통합 화면의 재시도 사유와 Home Assistant 로그의 경고 줄에 남습니다(요약이 바뀔 때 한 번). 예: `SmartThings Find could not confirm the web session (cookie source: saved_session, chkLogin.do: HTTP 200 html, redirected to account.samsung.com)`
 
 ---
 
@@ -271,7 +272,7 @@ Home Assistant → 설정 → 디바이스 및 서비스 → SmartThings Find �
 - 일부 쿠키 값을 브라우저와 다르게 따옴표로 감싸 보내던 문제(최신 Home Assistant에서는 삼성이 회전한 `AWSALB` 같은 쿠키 포함)
 - 로그인 페이지 응답도 KeepAlive 성공으로 세어, 만료된 세션에서 재인증 요청이 나오지 않을 수 있던 문제
 
-업데이트 뒤에도 같은 증상이 있으면 새 Cookie로 한 번 재인증한 다음, 증상이 다시 나타났을 때 진단 정보를 내려받아 이슈에 첨부하세요. `cookie_store.loaded_from`(재시작 때 저장된 세션을 썼는지), `last_chk_login`(삼성 응답), `keepalive`(마지막 성공·실패) 값이 원인 확인에 쓰입니다. 통합이 로드되지 않아 진단 메뉴가 없으면 설정 오류 로그 줄을 첨부하세요.
+업데이트 뒤에도 같은 증상이 있으면 새 Cookie로 한 번 재인증한 다음, 증상이 다시 나타났을 때 진단 정보를 내려받아 이슈에 첨부하세요. `cookie_store.loaded_from`(재시작 때 저장된 세션을 썼는지), `last_chk_login`(삼성 응답), `keepalive`(마지막 성공·실패) 값이 원인 확인에 쓰입니다. 통합이 로드되지 않아 진단 메뉴가 없으면 로그의 `SmartThings Find could not confirm the web session` 경고 줄을 첨부하세요.
 
 ### 배터리가 Unknown
 

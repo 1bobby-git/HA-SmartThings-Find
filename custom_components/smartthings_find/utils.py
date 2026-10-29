@@ -345,6 +345,31 @@ def apply_scoped_cookies(
         session.cookie_jar.update_cookies({name: morsel}, response_url=STF_BASE)
 
 
+def seed_session_cookies(
+    session: aiohttp.ClientSession,
+    cookies: Mapping[str, str],
+    scoped: list[dict[str, str]] | tuple = (),
+) -> dict[str, str]:
+    """Seed a pasted or restored cookie line and return the values that are seeds.
+
+    A restored snapshot records a host-only root cookie in ``scoped`` only when
+    the server set it next to a parent-domain twin. Such a cookie came from
+    Samsung, so it is not a seed and normalization keeps it, as it did before
+    the restart.
+    """
+    apply_cookies_to_session(session, dict(cookies))
+    if scoped:
+        apply_scoped_cookies(session, list(scoped))
+    server_set = {
+        record["name"]
+        for record in scoped or ()
+        if (record.get("domain"), record.get("path")) == (STF_HOST, "/")
+    }
+    seeds = {name: value for name, value in cookies.items() if name not in server_set}
+    normalize_cookie_jar(session, seeds)
+    return seeds
+
+
 @functools.lru_cache(maxsize=1)
 def _verbatim_cookie_jar_class() -> type:
     """Build the jar class on first use; tests may run with an aiohttp stub."""
@@ -556,20 +581,37 @@ async def _device_list_ping(session: aiohttp.ClientSession, csrf: str) -> None:
         raise HomeAssistantError("SmartThings Find keepalive returned an unexpected response")
 
 
+def _chk_login_signals_expiry(record: Mapping[str, Any] | None) -> bool:
+    """Return true when chkLogin.do answered with an explicit sign-out signal.
+
+    ``fail``, ``Logout``, HTTP 401 and a redirect away from SmartThings Find (to
+    the Samsung sign-in page) mean the session ended. A page without a CSRF
+    token served by SmartThings Find itself can also be a maintenance page.
+    """
+    if not record:
+        return True
+    if record.get("body") in ("fail", "Logout") or record.get("status") == 401:
+        return True
+    final_host = record.get("final_host")
+    return bool(record.get("redirects")) and final_host not in (None, STF_HOST)
+
+
 async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> None:
     """Confirm the login with chkLogin.do, then keep the web session active.
 
     chkLogin.do runs on every KeepAlive, also in passive mode where polling never
     calls it, so the login state is checked as documented and a fresh CSRF token
     is cached. The device list request is the same activity the web client makes.
-    Only a JSON device list counts as success; a sign-in page or an outage is an
-    error without being treated as an authentication failure.
+    Only a JSON device list counts as success.
 
     When chkLogin.do fails while a CSRF token is cached, the device list decides,
     as it did before 1.4.6: a session that still lists devices is alive, and an
-    expired one fails that request too.
+    expired one fails that request too. When both requests fail without an
+    explicit sign-out signal, for example a maintenance page on both, the
+    failure is temporary rather than an authentication failure.
     """
-    cached_csrf = _entry_runtime(hass, entry_id).get("_csrf")
+    runtime = _entry_runtime(hass, entry_id)
+    cached_csrf = runtime.get("_csrf")
     try:
         csrf = await fetch_csrf(hass, session, entry_id, retry_delays=())
     except Exception as chk_error:
@@ -580,6 +622,12 @@ async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, en
         except ConfigEntryAuthFailed:
             raise
         except Exception:  # noqa: BLE001
+            if isinstance(chk_error, ConfigEntryAuthFailed) and not (
+                _chk_login_signals_expiry(runtime.get(DIAG_LAST_CHK_LOGIN))
+            ):
+                raise HomeAssistantError(
+                    "SmartThings Find answered neither as signed in nor as signed out"
+                ) from None
             raise chk_error from None
         _LOGGER.debug(
             "chkLogin.do failed (%s) but the session still lists devices",

@@ -206,6 +206,43 @@ class KeepaliveFallbackTests(unittest.IsolatedAsyncioTestCase):
             await utils.keepalive_ping(types.SimpleNamespace(data={}), session, "entry-id")
         self.assertEqual([], session.post_calls)
 
+    async def test_maintenance_page_on_both_endpoints_stays_transient(self) -> None:
+        session = _FakeSession(
+            [_FakeResponse("<html>maintenance</html>"), _FakeResponse("<html>maintenance</html>")]
+        )
+        with self.assertRaises(HomeAssistantError) as caught:
+            await utils.keepalive_ping(_hass_with_cached_csrf(), session, "entry-id")
+        self.assertNotIsInstance(caught.exception, ConfigEntryAuthFailed)
+
+    async def test_not_found_on_both_endpoints_stays_transient(self) -> None:
+        session = _FakeSession(
+            [_FakeResponse("missing", status=404), _FakeResponse("missing", status=404)]
+        )
+        with self.assertRaises(HomeAssistantError) as caught:
+            await utils.keepalive_ping(_hass_with_cached_csrf(), session, "entry-id")
+        self.assertNotIsInstance(caught.exception, ConfigEntryAuthFailed)
+
+    async def test_redirect_to_the_sign_in_page_is_an_auth_failure(self) -> None:
+        session = _FakeSession(
+            [
+                _FakeResponse(
+                    "<html>sign in</html>", host="account.samsung.com", history=(object(),)
+                ),
+                _FakeResponse("<html>sign in</html>"),
+            ]
+        )
+        with self.assertRaises(ConfigEntryAuthFailed):
+            await utils.keepalive_ping(_hass_with_cached_csrf(), session, "entry-id")
+
+    async def test_forbidden_chk_login_with_a_working_device_list_succeeds(self) -> None:
+        session = _FakeSession(
+            [_FakeResponse("denied", status=403), _FakeResponse(json.dumps({"deviceList": []}))]
+        )
+
+        await utils.keepalive_ping(_hass_with_cached_csrf(), session, "entry-id")
+
+        self.assertEqual(1, len(session.post_calls))
+
 
 class LogHygieneTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_operation_log_omits_identifiers_and_body(self) -> None:

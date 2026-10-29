@@ -426,6 +426,62 @@ class ScopedCookiePersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session_store.MAX_SCOPED_COOKIES, len(scoped))
         self.assertTrue(all(record["domain"] == "samsung.com" for record in scoped))
 
+    async def _restart(self, hass, entry):
+        restarted = types.SimpleNamespace(data={})
+        line, scoped = await session_store.async_load_session_cookies(restarted, entry)
+        session = utils.make_session(restarted)
+        seeds = utils.seed_session_cookies(session, utils.parse_cookie_header(line), scoped)
+        return session, seeds
+
+    async def test_restart_keeps_a_host_only_cookie_the_server_set(self) -> None:
+        hass = types.SimpleNamespace(data={})
+        entry = _Entry("JSESSIONID=seed; X=seed")
+        session = utils.make_session(hass)
+        try:
+            seeds = utils.seed_session_cookies(session, {"JSESSIONID": "seed", "X": "seed"})
+            _set_cookie(session, "X=parent-old; Domain=.samsung.com; Path=/")
+            utils.normalize_cookie_jar(session, seeds)
+            _set_cookie(session, "X=host-new; Path=/")
+            utils.normalize_cookie_jar(session, seeds)
+            self.assertEqual(
+                "host-new", session.cookie_jar.filter_cookies(utils.STF_BASE)["X"].value
+            )
+            await session_store.persist_cookie_to_store(hass, entry, session)
+        finally:
+            await session.close()
+
+        session, seeds = await self._restart(hass, entry)
+        try:
+            self.assertNotIn("X", seeds)
+            self.assertEqual(
+                "host-new", session.cookie_jar.filter_cookies(utils.STF_BASE)["X"].value
+            )
+        finally:
+            await session.close()
+
+    async def test_restart_still_prefers_a_rotated_parent_cookie_over_the_seed(self) -> None:
+        hass = types.SimpleNamespace(data={})
+        entry = _Entry("JSESSIONID=seed; X=seed")
+        session = utils.make_session(hass)
+        try:
+            seeds = utils.seed_session_cookies(session, {"JSESSIONID": "seed", "X": "seed"})
+            _set_cookie(session, "X=fresh; Domain=.samsung.com; Path=/")
+            utils.normalize_cookie_jar(session, seeds)
+            await session_store.persist_cookie_to_store(hass, entry, session)
+        finally:
+            await session.close()
+
+        session, _seeds = await self._restart(hass, entry)
+        try:
+            self.assertEqual(
+                "fresh", session.cookie_jar.filter_cookies(utils.STF_BASE)["X"].value
+            )
+            self.assertNotIn(
+                (utils.STF_HOST, "/", "X", "fresh"), _entries(session.cookie_jar)
+            )
+        finally:
+            await session.close()
+
 
 if __name__ == "__main__":
     unittest.main()

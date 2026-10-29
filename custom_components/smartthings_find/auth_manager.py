@@ -33,14 +33,13 @@ from .session_store import (
 )
 from .utils import (
     COOKIE_SEEDS_KEY,
-    apply_cookies_to_session,
-    apply_scoped_cookies,
     clear_auth_failure,
     fetch_csrf,
     get_device_location,
     keepalive_ping,
     normalize_cookie_jar,
     parse_cookie_header,
+    seed_session_cookies,
     send_operation,
 )
 
@@ -113,11 +112,8 @@ class SmartThingsFindAuthManager:
         clear = getattr(self.session.cookie_jar, "clear", None)
         if callable(clear):
             clear()
-        apply_cookies_to_session(self.session, cookies)
-        if scoped:
-            apply_scoped_cookies(self.session, list(scoped))
-        self._entry_runtime()[COOKIE_SEEDS_KEY] = dict(cookies)
-        normalize_cookie_jar(self.session, cookies)
+        seeds = seed_session_cookies(self.session, cookies, list(scoped))
+        self._entry_runtime()[COOKIE_SEEDS_KEY] = seeds
 
     async def _fetch_csrf_locked(
         self,
