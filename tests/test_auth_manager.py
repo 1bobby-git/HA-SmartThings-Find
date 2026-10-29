@@ -418,6 +418,34 @@ class AuthManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"JSESSIONID": "seed"}, session.cookie_jar.values)
         self.assertEqual([[record]], auth_manager._applied_scoped)
 
+    async def test_cookie_save_failure_is_recorded_for_diagnostics(self) -> None:
+        hass = _Hass()
+        session = _Session()
+        manager = auth_manager.SmartThingsFindAuthManager(
+            hass,
+            _Entry(auth_manager.AUTH_METHOD_COOKIE),
+            session,
+        )
+        original = auth_manager.persist_cookie_to_store
+
+        async def failing_persist(*_args, **_kwargs):
+            raise OSError("storage unavailable")
+
+        async def operation():
+            return "ok"
+
+        auth_manager.persist_cookie_to_store = failing_persist
+        try:
+            self.assertEqual("ok", await manager.async_read(operation))
+        finally:
+            auth_manager.persist_cookie_to_store = original
+
+        record = hass.data[auth_manager.DOMAIN]["entry-id"][
+            auth_manager.DIAG_COOKIE_STORE
+        ]
+        self.assertEqual("OSError", record["last_save_error"])
+        self.assertIn("last_save_error_at", record)
+
 
 if __name__ == "__main__":
     unittest.main()

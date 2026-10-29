@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 import aiohttp
@@ -21,6 +22,7 @@ from .const import (
     CONF_ACTIVE_MODE_OTHERS,
     CONF_ACTIVE_MODE_SMARTTAGS,
     CONF_AUTH_METHOD,
+    DIAG_COOKIE_STORE,
     DOMAIN,
 )
 from .device_inventory import get_devices
@@ -153,6 +155,12 @@ class SmartThingsFindAuthManager:
         try:
             await persist_cookie_to_store(self.hass, self.entry, self.session)
         except Exception as err:  # noqa: BLE001
+            self._entry_runtime().setdefault(DIAG_COOKIE_STORE, {}).update(
+                {
+                    "last_save_error": type(err).__name__,
+                    "last_save_error_at": datetime.now(tz=timezone.utc).isoformat(),
+                }
+            )
             _LOGGER.debug(
                 "SmartThings Find cookie persistence failed (%s)",
                 type(err).__name__,

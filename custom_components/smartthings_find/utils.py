@@ -22,6 +22,8 @@ from .const import (
     CONF_ACTIVE_MODE_SMARTTAGS,
     CONF_ACTIVE_MODE_OTHERS,
     CONF_COOKIE,  # noqa: F401  re-exported; callers read utils.CONF_COOKIE
+    DIAG_KEEPALIVE,
+    DIAG_LAST_CHK_LOGIN,
     OP_CHECK_CONNECTION,
     OP_CHECK_CONNECTION_WITH_LOCATION,
     STF_BASE_URL,
@@ -42,11 +44,6 @@ URL_CHK_LOGIN = STF_BASE / STF_CHK_LOGIN_PATH
 URL_DEVICE_LIST = STF_BASE / STF_DEVICE_LIST_PATH
 URL_SET_LAST_DEVICE = STF_BASE / STF_SET_LAST_DEVICE_PATH
 URL_ADD_OPERATION = STF_BASE / STF_ADD_OPERATION_PATH  # requires ?_csrf=
-
-# Runtime keys read by diagnostics.py. Values never contain cookies, CSRF
-# tokens, response bodies, account or device identifiers.
-DIAG_LAST_CHK_LOGIN = "_diag_last_chk_login"
-DIAG_KEEPALIVE = "_diag_keepalive"
 
 
 def _utc_now_iso() -> str:

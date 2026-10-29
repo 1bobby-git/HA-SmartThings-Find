@@ -21,6 +21,7 @@
 | `custom_components/smartthings_find/auth_manager.py` | 생성 시 `_auth_reconfiguring` 정리, scoped 복원, 응답 후 jar 정규화 |
 | `custom_components/smartthings_find/coordinator.py` | KeepAlive 성공 시 폴링 재개, KeepAlive 진단 기록 |
 | `custom_components/smartthings_find/diagnostics.py` | 신규 |
+| `custom_components/smartthings_find/const.py` | 진단 런타임 키(`DIAG_*`) |
 | `custom_components/smartthings_find/manifest.json`, `CHANGELOG.md`, `README.md` | 1.4.6 |
 | `.github/workflows/unit-tests.yaml` | aiohttp 설치 |
 | `tests/test_v146_cookie_jar.py`, `tests/test_v146_recovery.py`, `tests/test_diagnostics.py` | 신규 |
@@ -134,9 +135,9 @@ def normalize_cookie_jar(session) -> int:
 
 **Files:** Create `diagnostics.py`, `tests/test_diagnostics.py`
 
-- [ ] **Step 1: 실패 테스트** — 런타임(실제 aiohttp jar, `_csrf`, 진단 기록, 기기 2개, 코디네이터 상태)으로 결과 생성 → 쿠키 이름·개수·scoped 범위 포함, 쿠키 값·CSRF·`usrId`·`dvceID`·좌표·기기 이름 없음. 런타임이 비어 있어도 동작.
+- [ ] **Step 1: 실패 테스트** — 런타임(실제 aiohttp jar, `_csrf`, 진단 기록, 기기 2개, 코디네이터 상태)으로 결과 생성 → 쿠키 이름·개수·도메인·경로 포함, 쿠키 값·CSRF·`usrId`·`dvceID`·좌표·기기 이름 없음. 런타임이 비어 있어도 동작하고 런타임을 만들지 않음. 쿠키 저장소가 시작 시 쿠키 출처·저장 시각·개수·저장소 오류를 기록(`session_store`), 저장 실패 종류를 기록(`auth_manager`).
 - [ ] **Step 2:** FAIL
-- [ ] **Step 3: 구현** — `async_get_config_entry_diagnostics(hass, entry)`
+- [ ] **Step 3: 구현** — `async_get_config_entry_diagnostics(hass, entry)`, 진단 키는 `const.py`의 `DIAG_*`
 - [ ] **Step 4:** PASS
 - [ ] **Step 5: Commit** `feat: add redacted SmartThings Find diagnostics`
 

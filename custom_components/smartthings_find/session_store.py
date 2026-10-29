@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from hashlib import sha256
 import logging
 from typing import Any
@@ -17,6 +18,7 @@ from .const import (
     AUTH_METHOD_COOKIE,
     CONF_AUTH_METHOD,
     CONF_COOKIE,
+    DIAG_COOKIE_STORE,
     DOMAIN,
 )
 from .utils import (
@@ -77,6 +79,16 @@ def _legacy_source_hash(entry: Any) -> str | None:
 
 def _runtime_data(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
     return hass.data.setdefault(DOMAIN, {}).setdefault(entry_id, {})
+
+
+def _record_store_diag(hass: HomeAssistant, entry_id: str, **values: Any) -> None:
+    """Remember cookie store activity for diagnostics: sources, counts, times."""
+    record = _runtime_data(hass, entry_id).setdefault(DIAG_COOKIE_STORE, {})
+    record.update(values)
+
+
+def _now_iso() -> str:
+    return datetime.now(tz=timezone.utc).isoformat()
 
 
 def _store(hass: HomeAssistant, entry_id: str) -> Store:
@@ -176,6 +188,13 @@ async def async_load_session_cookies(
             "Unable to load the private SmartThings Find session store: %s",
             type(err).__name__,
         )
+        _record_store_diag(
+            hass,
+            entry.entry_id,
+            loaded_from="configured_cookie" if fallback else "none",
+            load_error=type(err).__name__,
+            loaded_at=_now_iso(),
+        )
         return fallback, []
 
     legacy_hash = _legacy_source_hash(entry)
@@ -203,12 +222,26 @@ async def async_load_session_cookies(
                     "Unable to migrate the legacy session-store boundary (%s)",
                     type(err).__name__,
                 )
+        _record_store_diag(
+            hass,
+            entry.entry_id,
+            loaded_from="saved_session",
+            load_error=None,
+            loaded_at=_now_iso(),
+        )
         return stored_cookie, scoped
 
     runtime[_COOKIE_CACHE_KEY] = {
         _SOURCE_HASH_KEY: source_hash,
         _COOKIE_KEY: fallback,
     }
+    _record_store_diag(
+        hass,
+        entry.entry_id,
+        loaded_from="configured_cookie" if fallback else "none",
+        load_error=None,
+        loaded_at=_now_iso(),
+    )
     return fallback, []
 
 
@@ -303,10 +336,18 @@ async def _persist_cookie_to_store_locked(
 
     await _store(hass, entry.entry_id).async_save(payload)
     runtime[_COOKIE_CACHE_KEY] = payload
+    cookie_count = len(parse_cookie_header(cookie_line))
+    _record_store_diag(
+        hass,
+        entry.entry_id,
+        last_saved=_now_iso(),
+        saved_cookie_count=cookie_count,
+        saved_scoped_count=len(scoped),
+    )
     _LOGGER.debug(
         "Persisted current SmartThings Find cookie jar in private storage "
         "(cookie_count=%s, scoped_count=%s)",
-        len(parse_cookie_header(cookie_line)),
+        cookie_count,
         len(scoped),
     )
 
