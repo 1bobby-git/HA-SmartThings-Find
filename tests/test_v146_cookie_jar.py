@@ -102,8 +102,16 @@ class CookieWireFormatTests(unittest.IsolatedAsyncioTestCase):
             self.seen.append(request.headers.get("Cookie", ""))
             return web.Response(text="ok")
 
+        async def rotate(request):
+            self.seen.append(request.headers.get("Cookie", ""))
+            response = web.Response(text="ok")
+            response.headers.add("Set-Cookie", "AWSALB=srv/rot+x==; Path=/")
+            response.headers.add("Set-Cookie", 'R="abc/def"; Path=/')
+            return response
+
         app = web.Application()
         app.router.add_get("/", handler)
+        app.router.add_get("/rotate", rotate)
         self.runner = web.AppRunner(app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "127.0.0.1", 0)
@@ -113,12 +121,13 @@ class CookieWireFormatTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.runner.cleanup()
 
-    async def _send_with(self, jar) -> str:
+    async def _send_with(self, jar, *paths: str) -> str:
         connector = aiohttp.TCPConnector(resolver=_LocalResolver())
         async with aiohttp.ClientSession(cookie_jar=jar, connector=connector) as client:
-            url = f"http://{utils.STF_HOST}:{self.port}/"
-            async with client.get(url) as response:
-                await response.text()
+            for path in paths or ("/",):
+                url = f"http://{utils.STF_HOST}:{self.port}{path}"
+                async with client.get(url) as response:
+                    await response.text()
         return self.seen[-1]
 
     async def test_pasted_cookie_values_are_sent_verbatim(self) -> None:
@@ -135,6 +144,63 @@ class CookieWireFormatTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("AWSALB=abc/def+ghi==", header)
         self.assertIn("JSESSIONID=plain.value", header)
         self.assertNotIn('"', header)
+
+    async def test_pasted_quoted_value_keeps_its_quotes(self) -> None:
+        session = utils.make_session(types.SimpleNamespace(data={}))
+        try:
+            utils.apply_cookies_to_session(
+                session, utils.parse_cookie_header('Cookie: Q="q/v"; P=abc/def+g==')
+            )
+            header = await self._send_with(session.cookie_jar)
+        finally:
+            await session.close()
+
+        self.assertIn('Q="q/v"', header)
+        self.assertIn("P=abc/def+g==", header)
+
+    async def test_server_rotated_values_are_sent_as_received(self) -> None:
+        """aiohttp 3.12+ quoted AWSALB-style values and dropped server quotes."""
+        session = utils.make_session(types.SimpleNamespace(data={}))
+        try:
+            utils.apply_cookies_to_session(session, {"JSESSIONID": "seed"})
+            header = await self._send_with(session.cookie_jar, "/rotate", "/")
+        finally:
+            await session.close()
+
+        self.assertIn("AWSALB=srv/rot+x==", header)
+        self.assertIn('R="abc/def"', header)
+        self.assertIn("JSESSIONID=seed", header)
+
+    async def test_received_values_survive_a_restart_unchanged(self) -> None:
+        _MemoryStore.values.clear()
+        hass = types.SimpleNamespace(data={})
+        entry = _Entry("JSESSIONID=seed")
+        session = utils.make_session(hass)
+        try:
+            utils.apply_cookies_to_session(
+                session, utils.parse_cookie_header('JSESSIONID=seed; Q="q/v"')
+            )
+            before = await self._send_with(session.cookie_jar, "/rotate", "/")
+            await session_store.persist_cookie_to_store(hass, entry, session)
+        finally:
+            await session.close()
+
+        restarted = types.SimpleNamespace(data={})
+        line, scoped = await session_store.async_load_session_cookies(restarted, entry)
+        session = utils.make_session(restarted)
+        try:
+            utils.apply_cookies_to_session(session, utils.parse_cookie_header(line))
+            utils.apply_scoped_cookies(session, scoped)
+            after = await self._send_with(session.cookie_jar)
+        finally:
+            await session.close()
+
+        def tokens(header: str) -> set[str]:
+            return {part.strip() for part in header.split(";")}
+
+        self.assertEqual(tokens(before), tokens(after))
+        self.assertIn('R="abc/def"', tokens(after))
+        self.assertIn('Q="q/v"', tokens(after))
 
 
 @unittest.skipUnless(HAS_AIOHTTP, "requires aiohttp")
@@ -176,6 +242,80 @@ class CookieShadowTests(unittest.IsolatedAsyncioTestCase):
     def test_normalize_ignores_jars_without_iteration(self) -> None:
         jar = types.SimpleNamespace(filter_cookies=lambda _url: {})
         self.assertEqual(0, utils.normalize_cookie_jar(types.SimpleNamespace(cookie_jar=jar)))
+
+    async def test_seeded_normalize_keeps_a_host_only_cookie_the_server_set(self) -> None:
+        session = utils.make_session(types.SimpleNamespace(data={}))
+        try:
+            seeds = {"X": "seed"}
+            utils.apply_cookies_to_session(session, seeds)
+            _set_cookie(session, "X=parent-old; Domain=.samsung.com; Path=/")
+            _set_cookie(session, "X=host-new; Path=/")
+
+            self.assertEqual(0, utils.normalize_cookie_jar(session, seeds))
+            self.assertIn((utils.STF_HOST, "/", "X", "host-new"), _entries(session.cookie_jar))
+        finally:
+            await session.close()
+
+    async def test_seeded_normalize_still_drops_the_untouched_seed(self) -> None:
+        session = utils.make_session(types.SimpleNamespace(data={}))
+        try:
+            seeds = {"X": "seed"}
+            utils.apply_cookies_to_session(session, seeds)
+            _set_cookie(session, "X=fresh; Domain=.samsung.com; Path=/")
+
+            self.assertEqual(1, utils.normalize_cookie_jar(session, seeds))
+            self.assertEqual(
+                "fresh", session.cookie_jar.filter_cookies(utils.STF_BASE)["X"].value
+            )
+        finally:
+            await session.close()
+
+    async def test_chk_login_response_reconciles_the_jar_before_the_next_request(
+        self,
+    ) -> None:
+        session = utils.make_session(types.SimpleNamespace(data={}))
+        try:
+            utils.apply_cookies_to_session(session, {"X": "seed"})
+            hass = types.SimpleNamespace(
+                data={utils.DOMAIN: {"entry-id": {utils.COOKIE_SEEDS_KEY: {"X": "seed"}}}}
+            )
+
+            class _Response:
+                status = 200
+                headers = {"_csrf": "token"}
+                history = ()
+                url = types.SimpleNamespace(host=utils.STF_HOST)
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_exc):
+                    return False
+
+                async def text(self) -> str:
+                    return "success"
+
+            class _Client:
+                cookie_jar = session.cookie_jar
+
+                def get(self, _url, **_kwargs):
+                    # aiohttp stores Set-Cookie before the caller reads the body.
+                    _set_cookie(session, "X=fresh; Domain=.samsung.com; Path=/")
+                    return _Response()
+
+            await utils.fetch_csrf(hass, _Client(), "entry-id", retry_delays=())
+
+            self.assertEqual(
+                "fresh", session.cookie_jar.filter_cookies(utils.STF_BASE)["X"].value
+            )
+        finally:
+            await session.close()
+
+    def test_bare_top_level_domain_is_not_a_smartthings_find_scope(self) -> None:
+        self.assertTrue(utils.is_stf_cookie_domain(utils.STF_HOST))
+        self.assertTrue(utils.is_stf_cookie_domain("samsung.com"))
+        self.assertFalse(utils.is_stf_cookie_domain("com"))
+        self.assertFalse(utils.is_stf_cookie_domain("account.samsung.com"))
 
 
 @unittest.skipUnless(HAS_AIOHTTP, "requires aiohttp")

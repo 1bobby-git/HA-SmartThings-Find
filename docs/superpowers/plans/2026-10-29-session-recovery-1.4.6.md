@@ -153,3 +153,11 @@ def normalize_cookie_jar(session) -> int:
 - [ ] 브랜치 push → GitHub Unit tests·HACS Validate·hassfest 성공 확인
 - [ ] `main` 병합·push → Release `v1.4.6` 생성과 첨부 파일 확인
 - [ ] #6·#9에 변경 요약과 진단 다운로드 안내 댓글(닫지 않음)
+
+### Task 10: 리뷰 반영 (설계 8절)
+
+- [ ] 실패 테스트: 폴링 재개 요청 예외·루프 반복 실패에도 KeepAlive 유지, 흐름 도중 바뀐 Cookie로 이전 jar 저장 안 함, 서버가 회전한 `AWSALB`·따옴표 값과 붙여 넣은 따옴표 값의 원문 전송과 재시작 후 유지, 서버가 설정한 host-only 쿠키 유지, `chkLogin.do` 직후 정규화, KeepAlive 대체 판단 6가지, 인증 외 실패 후 저장, `com` 범위 제외, 진단 폴링 필드와 설정 오류 요약
+- [ ] 구현: `coordinator.py`, `auth_manager.py`, `session_store.py`, `utils.py`, `diagnostics.py`, `__init__.py`
+- [ ] CI 매트릭스(Python 3.12 + aiohttp 3.11.18, Python 3.13 + 최신 aiohttp), CHANGELOG·README 문구
+- [ ] Linux: aiohttp 없음 / 3.11.18 / 최신(3.12), 최신(3.13)에서 전체 통과, 새 테스트가 리뷰 전 코드에서 실패
+- [ ] Commit `fix: address review of the SmartThings Find 1.4.6 session fixes`

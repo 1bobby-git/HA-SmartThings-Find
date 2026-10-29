@@ -69,6 +69,12 @@ def _source_hash(source: str) -> str:
     return sha256(source.encode("utf-8")).hexdigest()
 
 
+def cookie_source_hash(entry: Any) -> str | None:
+    """Identify the credential a cookie jar is seeded from, without the secret."""
+    source = _source_identity(entry)
+    return _source_hash(source) if source else None
+
+
 def _legacy_source_hash(entry: Any) -> str | None:
     """Return the v1.3.x cookie-store boundary for in-place migration."""
     if _auth_method(entry) != AUTH_METHOD_COOKIE:
@@ -245,12 +251,18 @@ async def async_load_session_cookies(
     return fallback, []
 
 
+def _wire_value(morsel: Any) -> str:
+    """Return the value as sent on the wire, quotes included."""
+    coded = getattr(morsel, "coded_value", None)
+    return str(coded if isinstance(coded, str) and coded else morsel.value)
+
+
 def _cookie_line_from_session(session: aiohttp.ClientSession) -> str:
     """Serialize the jar's current effective cookies without reviving deletions."""
     current: dict[str, str] = {}
     for name, morsel in session.cookie_jar.filter_cookies(STF_BASE).items():
         if COOKIE_NAME_RE.match(name):
-            current[name] = morsel.value
+            current[name] = _wire_value(morsel)
 
     return "; ".join(
         f"{name}={value}" for name, value in sorted(current.items())
@@ -277,7 +289,7 @@ def _scoped_cookies_from_session(session: aiohttp.ClientSession) -> list[dict[st
         if not is_stf_cookie_domain(domain) or (domain, path) == (STF_HOST, "/"):
             continue
         record = _valid_scoped_record(
-            {"name": name, "value": str(morsel.value), "domain": domain, "path": path}
+            {"name": name, "value": _wire_value(morsel), "domain": domain, "path": path}
         )
         if record is not None:
             records[(domain, path, name)] = record
@@ -298,16 +310,27 @@ async def persist_cookie_to_store(
     hass: HomeAssistant,
     entry: Any,
     session: aiohttp.ClientSession,
+    *,
+    seeded_source_hash: str | None = None,
 ) -> None:
-    """Take the latest jar snapshot only after earlier writes have finished."""
+    """Take the latest jar snapshot only after earlier writes have finished.
+
+    ``seeded_source_hash`` is the ``cookie_source_hash`` of the credential the
+    jar was seeded from. When the entry's credential has changed since (a
+    reauth, reconfigure or options flow), the jar is not saved, so the next
+    setup starts from the newly entered cookie instead of the replaced one.
+    """
     async with _cookie_store_lock(hass, entry.entry_id):
-        await _persist_cookie_to_store_locked(hass, entry, session)
+        await _persist_cookie_to_store_locked(
+            hass, entry, session, seeded_source_hash
+        )
 
 
 async def _persist_cookie_to_store_locked(
     hass: HomeAssistant,
     entry: Any,
     session: aiohttp.ClientSession,
+    seeded_source_hash: str | None = None,
 ) -> None:
     """Persist the current effective jar in ``.storage``.
 
@@ -320,10 +343,16 @@ async def _persist_cookie_to_store_locked(
     source = _source_identity(entry)
     if not source:
         return
+    source_hash = _source_hash(source)
+    if seeded_source_hash is not None and seeded_source_hash != source_hash:
+        _LOGGER.debug(
+            "Skipped saving SmartThings Find cookies seeded from replaced credentials"
+        )
+        return
 
     cookie_line = _cookie_line_from_session(session)
     payload: dict[str, Any] = {
-        _SOURCE_HASH_KEY: _source_hash(source),
+        _SOURCE_HASH_KEY: source_hash,
         _COOKIE_KEY: cookie_line,
     }
     scoped = _scoped_cookies_from_session(session)

@@ -93,6 +93,9 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self._async_keepalive()
             except asyncio.CancelledError:
                 raise
+            except Exception as err:  # noqa: BLE001
+                # One failed iteration must never end the session keepalive.
+                _LOGGER.debug("KeepAlive iteration failed: %s", type(err).__name__)
 
     async def _async_keepalive(self) -> None:
         """Ping SmartThings Find and rebuild an expired web session when possible."""
@@ -119,16 +122,26 @@ class SmartThingsFindCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
 
         record_keepalive(self.hass, self.entry.entry_id)
-        if self._polling_stopped_by_auth_failure():
+        if self.polling_stopped_by_auth_failure():
             # Home Assistant stops scheduling refreshes after ConfigEntryAuthFailed.
             # A successful KeepAlive proves the session works again, so one
             # refresh restores the schedule instead of leaving entities stale.
+            # The debounced request merges with a refresh a button already asked
+            # for, so active mode never sends two wake requests back to back.
             _LOGGER.info(
                 "SmartThings Find session works again; resuming location updates"
             )
-            await self.async_refresh()
+            try:
+                await self.async_request_refresh()
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug(
+                    "Resuming location updates failed: %s", type(err).__name__
+                )
 
-    def _polling_stopped_by_auth_failure(self) -> bool:
+    def polling_stopped_by_auth_failure(self) -> bool:
+        """Return true while Home Assistant holds polling after an auth failure."""
         return not self.last_update_success and isinstance(
             self.last_exception, ConfigEntryAuthFailed
         )

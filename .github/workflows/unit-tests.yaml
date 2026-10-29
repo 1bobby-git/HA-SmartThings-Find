@@ -7,20 +7,33 @@ on:
 jobs:
   unit-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Home Assistant 2024.12 (the minimum in hacs.json) ships aiohttp 3.11.
+          - python-version: "3.12"
+            aiohttp: "aiohttp==3.11.18"
+            hassfest: true
+          # Current Home Assistant releases run Python 3.13 with aiohttp 3.12+.
+          - python-version: "3.13"
+            aiohttp: "aiohttp"
+            hassfest: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Verify persistent authentication dependency
         run: |
           python -m pip install --disable-pip-version-check "samsung-re-find==0.2.2"
           python -c "from samsung_find.auth import SamsungAuth; print(SamsungAuth.__name__)"
       - name: Install aiohttp for cookie jar tests
-        run: python -m pip install --disable-pip-version-check aiohttp
+        run: python -m pip install --disable-pip-version-check "${{ matrix.aiohttp }}"
       - name: Compile integration modules
         run: python -m compileall -q custom_components/smartthings_find
       - name: Run unit tests
         run: python -m unittest discover -s tests
       - name: Validate integration with hassfest
+        if: ${{ matrix.hassfest }}
         uses: home-assistant/actions/hassfest@master

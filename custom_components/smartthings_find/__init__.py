@@ -32,6 +32,7 @@ from .utils import (
     auth_failure_is_persistent,
     clear_auth_failure,
     make_session,
+    session_evidence,
 )
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -142,12 +143,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for key in (DATA_SESSION, DATA_AUTH_MANAGER, DATA_COORDINATOR, DATA_DEVICES):
             runtime.pop(key, None)
 
+        # The diagnostics download needs a loaded entry, so the log line of this
+        # setup error carries the session evidence (labels and HTTP status only).
+        evidence = session_evidence(hass, entry.entry_id)
         if not auth_failure_is_persistent(hass, entry.entry_id):
             raise ConfigEntryNotReady(
                 "SmartThings Find authentication is temporarily unavailable; "
-                "automatic session recovery will retry before reauthentication"
+                "automatic session recovery will retry before reauthentication "
+                f"({evidence})"
             ) from err
-        raise
+        raise ConfigEntryAuthFailed(f"{err} ({evidence})") from err
 
     except Exception as err:
         if coordinator is not None:

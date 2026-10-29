@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import math
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from http.cookies import CookieError, Morsel, SimpleCookie
 from typing import Any, TypeVar
@@ -22,6 +23,7 @@ from .const import (
     CONF_ACTIVE_MODE_SMARTTAGS,
     CONF_ACTIVE_MODE_OTHERS,
     CONF_COOKIE,  # noqa: F401  re-exported; callers read utils.CONF_COOKIE
+    DIAG_COOKIE_STORE,
     DIAG_KEEPALIVE,
     DIAG_LAST_CHK_LOGIN,
     OP_CHECK_CONNECTION,
@@ -82,9 +84,31 @@ def record_keepalive(
         state["last_error"] = type(error).__name__
 
 
+def session_evidence(hass: HomeAssistant, entry_id: str) -> str:
+    """Summarize where the cookie came from and what chkLogin.do answered.
+
+    Setup errors carry this line into the Home Assistant log, because the
+    diagnostics download is offered only while the entry is loaded. Only labels,
+    HTTP status codes and host names are included.
+    """
+    runtime = hass.data.get(DOMAIN, {}).get(entry_id) or {}
+    store = runtime.get(DIAG_COOKIE_STORE) or {}
+    parts = [f"cookie source: {store.get('loaded_from') or 'unknown'}"]
+    chk = runtime.get(DIAG_LAST_CHK_LOGIN) or {}
+    if chk:
+        parts.append(f"chkLogin.do: HTTP {chk.get('status')} {chk.get('body')}")
+        if chk.get("redirects"):
+            parts.append(f"redirected to {chk.get('final_host')}")
+    return ", ".join(parts)
+
+
 COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 STF_HOST = str(getattr(STF_BASE, "host", None) or "smartthingsfind.samsung.com")
+
+# Runtime key for the cookie values this integration seeded into the jar (the
+# pasted or restored line). It holds secrets and is never read by diagnostics.
+COOKIE_SEEDS_KEY = "_cookie_seeds"
 
 
 def _raw_morsel(name: str, value: str) -> Morsel | str:
@@ -92,9 +116,9 @@ def _raw_morsel(name: str, value: str) -> Morsel | str:
 
     A plain ``{name: value}`` seed makes aiohttp wrap values containing ``/``,
     ``+``, ``=`` and similar characters in double quotes, which the browser never
-    does. A Morsel whose coded value is the raw value, together with
-    ``CookieJar(quote_cookie=False)``, keeps the value verbatim on every aiohttp
-    release Home Assistant has shipped.
+    does. A Morsel whose coded value is the raw value, sent through the
+    verbatim jar from ``make_session``, keeps the value as pasted, quotes
+    included, on every aiohttp release Home Assistant has shipped.
     """
     morsel: Morsel = Morsel()
     try:
@@ -112,42 +136,63 @@ def cookie_scope(morsel: Any) -> tuple[str, str]:
 
 
 def is_stf_cookie_domain(domain: str) -> bool:
-    """Return true for SmartThings Find's host and the domains above it."""
-    return domain == STF_HOST or STF_HOST.endswith("." + domain)
+    """Return true for SmartThings Find's host and samsung.com above it.
+
+    A bare top-level domain such as ``com`` is never a legitimate cookie scope.
+    """
+    if domain == STF_HOST:
+        return True
+    return "." in domain and STF_HOST.endswith("." + domain)
 
 
 def _jar_morsels(session: Any) -> list[Any] | None:
+    jar = getattr(session, "cookie_jar", None)
+    if jar is None:
+        return None
     try:
-        return list(session.cookie_jar)
+        return list(jar)
     except TypeError:
         return None
 
 
-def normalize_cookie_jar(session: Any) -> int:
+def normalize_cookie_jar(
+    session: Any,
+    seeds: Mapping[str, str] | None = None,
+) -> int:
     """Drop pasted host-only cookies shadowed by a server-set parent-domain cookie.
 
     A pasted Cookie header carries no Domain attribute, so every seed becomes a
     host-only cookie for smartthingsfind.samsung.com. When Samsung later rotates
     the same cookie with ``Domain=.samsung.com``, aiohttp keeps both and keeps
     sending the stale host-only value. The parent-domain copy can only come from
-    a server response, so it is the current one. Returns the number removed.
+    a server response, so it is newer than the seed.
+
+    ``seeds`` holds the values this integration seeded. When given, a host-only
+    cookie is removed only while it still has its seeded value, so a host-only
+    cookie the server set later is never replaced by an older parent copy.
+    Without ``seeds`` every shadowed host-only copy is removed. Returns the
+    number removed.
     """
     morsels = _jar_morsels(session)
     if not morsels:
         return 0
 
     parent_root: set[str] = set()
-    host_root: set[str] = set()
+    host_root: dict[str, str] = {}
     for morsel in morsels:
         domain, path = cookie_scope(morsel)
         if path != "/" or not is_stf_cookie_domain(domain):
             continue
         if domain == STF_HOST:
-            host_root.add(morsel.key)
+            host_root[morsel.key] = morsel.value
         else:
             parent_root.add(morsel.key)
 
-    shadowed = host_root & parent_root
+    shadowed = {
+        name
+        for name, value in host_root.items()
+        if name in parent_root and (seeds is None or seeds.get(name) == value)
+    }
     clear = getattr(session.cookie_jar, "clear", None)
     if not shadowed or not callable(clear):
         return 0
@@ -161,6 +206,21 @@ def normalize_cookie_jar(session: Any) -> int:
         len(shadowed),
     )
     return len(shadowed)
+
+
+def _normalize_seeded_jar(hass: HomeAssistant, session: Any, entry_id: str) -> None:
+    """Reconcile the jar right after a response, before the next request."""
+    seeds = hass.data.get(DOMAIN, {}).get(entry_id, {}).get(COOKIE_SEEDS_KEY)
+    if seeds is None:
+        return
+    try:
+        normalize_cookie_jar(session, seeds)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug(
+            "SmartThings Find cookie jar normalization failed (%s)",
+            type(err).__name__,
+        )
+
 
 def _cookies_from_json(text: str) -> dict[str, str]:
     """Parse browser/extension JSON cookie exports (array or object).
@@ -231,7 +291,9 @@ def parse_cookie_header(cookie_header_line: str) -> dict[str, str]:
         sc.load(s)
         for k, morsel in sc.items():
             if COOKIE_NAME_RE.match(k):
-                jar[k] = morsel.value
+                # The coded value is the token as pasted, quotes included, which
+                # is what the browser sends back.
+                jar[k] = morsel.coded_value
         if jar:
             return jar
     except CookieError:
@@ -283,12 +345,43 @@ def apply_scoped_cookies(
         session.cookie_jar.update_cookies({name: morsel}, response_url=STF_BASE)
 
 
+@functools.lru_cache(maxsize=1)
+def _verbatim_cookie_jar_class() -> type:
+    """Build the jar class on first use; tests may run with an aiohttp stub."""
+
+    class VerbatimCookieJar(aiohttp.CookieJar):
+        """Send each cookie value exactly as it was pasted or received.
+
+        ``quote_cookie=False`` stops aiohttp from quoting values that contain
+        ``/``, ``+`` or ``=``. From aiohttp 3.12 it also drops the quotes of a
+        value the server sent quoted, so the received coded value is restored.
+        """
+
+        def filter_cookies(self, request_url, *args, **kwargs):
+            filtered = super().filter_cookies(request_url, *args, **kwargs)
+            received: dict[tuple[str, str], str] = {}
+            for morsel in self:
+                received.setdefault((morsel.key, morsel.value), morsel.coded_value)
+            for name, morsel in list(filtered.items()):
+                coded = received.get((morsel.key, morsel.value))
+                if coded is None or coded == morsel.coded_value:
+                    continue
+                restored: Morsel = Morsel()
+                try:
+                    restored.set(morsel.key, morsel.value, coded)
+                except CookieError:
+                    continue
+                filtered[name] = restored
+            return filtered
+
+    return VerbatimCookieJar
+
+
 def make_session(hass: HomeAssistant) -> aiohttp.ClientSession:
     """Dedicated session (not Home Assistant managed session)."""
     _ = hass  # keep signature for compatibility (unused)
 
-    # quote_cookie=False sends cookie values exactly as the browser does.
-    jar = aiohttp.CookieJar(unsafe=True, quote_cookie=False)
+    jar = _verbatim_cookie_jar_class()(unsafe=True, quote_cookie=False)
 
     # 너무 공격적이지 않게 기본 타임아웃만 설정
     timeout = aiohttp.ClientTimeout(total=30)
@@ -326,6 +419,9 @@ async def _fetch_csrf_once(
 
         _LOGGER.debug("chkLogin.do status=%s csrf=%s", status, bool(csrf))
         if entry_id is not None:
+            # chkLogin.do may rotate a seeded cookie with a parent Domain; the
+            # request that follows must already send the rotated value.
+            _normalize_seeded_jar(hass, session, entry_id)
             hass.data[DOMAIN][entry_id][DIAG_LAST_CHK_LOGIN] = {
                 "status": status,
                 "body": _body_kind(text),
@@ -437,17 +533,8 @@ def _is_device_list_payload(body: str) -> bool:
     return isinstance(payload, dict) and isinstance(payload.get("deviceList"), list)
 
 
-async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> None:
-    """Confirm the login with chkLogin.do, then keep the web session active.
-
-    chkLogin.do runs on every KeepAlive, also in passive mode where polling never
-    calls it, so the login state is checked as documented and a fresh CSRF token
-    is cached. The device list request is the same activity the web client makes.
-    Only a JSON device list counts as success; a sign-in page or an outage is an
-    error without being treated as an authentication failure.
-    """
-    csrf = await fetch_csrf(hass, session, entry_id, retry_delays=())
-
+async def _device_list_ping(session: aiohttp.ClientSession, csrf: str) -> None:
+    """Request the device list like the web client; only a JSON list succeeds."""
     url = URL_DEVICE_LIST.update_query({"_csrf": csrf})
     async with session.post(url, headers={"Accept": "application/json"}, data={}) as resp:
         body = (await resp.text()).strip()
@@ -467,6 +554,40 @@ async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, en
             len(body),
         )
         raise HomeAssistantError("SmartThings Find keepalive returned an unexpected response")
+
+
+async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> None:
+    """Confirm the login with chkLogin.do, then keep the web session active.
+
+    chkLogin.do runs on every KeepAlive, also in passive mode where polling never
+    calls it, so the login state is checked as documented and a fresh CSRF token
+    is cached. The device list request is the same activity the web client makes.
+    Only a JSON device list counts as success; a sign-in page or an outage is an
+    error without being treated as an authentication failure.
+
+    When chkLogin.do fails while a CSRF token is cached, the device list decides,
+    as it did before 1.4.6: a session that still lists devices is alive, and an
+    expired one fails that request too.
+    """
+    cached_csrf = _entry_runtime(hass, entry_id).get("_csrf")
+    try:
+        csrf = await fetch_csrf(hass, session, entry_id, retry_delays=())
+    except Exception as chk_error:
+        if not cached_csrf:
+            raise
+        try:
+            await _device_list_ping(session, cached_csrf)
+        except ConfigEntryAuthFailed:
+            raise
+        except Exception:  # noqa: BLE001
+            raise chk_error from None
+        _LOGGER.debug(
+            "chkLogin.do failed (%s) but the session still lists devices",
+            type(chk_error).__name__,
+        )
+        return
+
+    await _device_list_ping(session, csrf)
 
 
 def parse_stf_date(datestr: str) -> datetime:
@@ -675,11 +796,11 @@ async def get_device_location(
     except ConfigEntryAuthFailed:
         raise
     except Exception as e:
-        # The exception text can quote coordinates; keep it out of error logs.
+        # The exception text can quote coordinates or response content, so
+        # neither the error log nor a debug traceback carries it.
         _LOGGER.error(
             "[%s] Unexpected SmartThings Find location response (%s)",
             dev_name,
             type(e).__name__,
         )
-        _LOGGER.debug("[%s] Location response handling failed", dev_name, exc_info=True)
         return None

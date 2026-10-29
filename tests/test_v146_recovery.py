@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import logging
 import sys
 import types
 import unittest
+from unittest import mock
 
 from test_utils_location import COMPONENT_DIR, _load_utils_module
 
@@ -157,6 +159,54 @@ class KeepaliveTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private", json.dumps([first, second]))
 
 
+class KeepaliveFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """A chkLogin.do failure alone never fails a session that still lists devices."""
+
+    async def test_rejected_chk_login_with_a_working_device_list_succeeds(self) -> None:
+        session = _FakeSession(
+            [_FakeResponse("fail"), _FakeResponse(json.dumps({"deviceList": []}))]
+        )
+        hass = _hass_with_cached_csrf()
+
+        await utils.keepalive_ping(hass, session, "entry-id")
+
+        self.assertEqual(1, len(session.post_calls))
+        self.assertEqual("cached", hass.data[utils.DOMAIN]["entry-id"]["_csrf"])
+
+    async def test_chk_login_outage_with_a_working_device_list_succeeds(self) -> None:
+        session = _FakeSession(
+            [_FakeResponse("busy", status=503), _FakeResponse(json.dumps({"deviceList": []}))]
+        )
+
+        await utils.keepalive_ping(_hass_with_cached_csrf(), session, "entry-id")
+
+        self.assertEqual(1, len(session.post_calls))
+
+    async def test_expired_session_still_fails_through_the_device_list(self) -> None:
+        session = _FakeSession([_FakeResponse("fail"), _FakeResponse("Logout")])
+        with self.assertRaises(ConfigEntryAuthFailed):
+            await utils.keepalive_ping(_hass_with_cached_csrf(), session, "entry-id")
+
+    async def test_rejected_chk_login_and_a_sign_in_page_is_an_auth_failure(self) -> None:
+        session = _FakeSession([_FakeResponse("fail"), _FakeResponse("<html>sign in</html>")])
+        with self.assertRaises(ConfigEntryAuthFailed):
+            await utils.keepalive_ping(_hass_with_cached_csrf(), session, "entry-id")
+
+    async def test_chk_login_outage_and_device_list_outage_stays_transient(self) -> None:
+        session = _FakeSession(
+            [_FakeResponse("busy", status=503), _FakeResponse("busy", status=503)]
+        )
+        with self.assertRaises(HomeAssistantError) as caught:
+            await utils.keepalive_ping(_hass_with_cached_csrf(), session, "entry-id")
+        self.assertNotIsInstance(caught.exception, ConfigEntryAuthFailed)
+
+    async def test_without_a_cached_csrf_a_rejected_chk_login_fails_at_once(self) -> None:
+        session = _FakeSession([_FakeResponse("fail")])
+        with self.assertRaises(ConfigEntryAuthFailed):
+            await utils.keepalive_ping(types.SimpleNamespace(data={}), session, "entry-id")
+        self.assertEqual([], session.post_calls)
+
+
 class LogHygieneTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_operation_log_omits_identifiers_and_body(self) -> None:
         session = _FakeSession([_FakeResponse("secret-body", status=403)])
@@ -237,19 +287,32 @@ def _load_coordinator_module():
             self.last_update_success = True
             self.last_exception = None
             self.refresh_calls = 0
+            self.request_refresh_calls = 0
+            self.refresh_error: Exception | None = None
 
         async def async_refresh(self) -> None:
             self.refresh_calls += 1
+
+        async def async_request_refresh(self) -> None:
+            self.request_refresh_calls += 1
+            if self.refresh_error is not None:
+                raise self.refresh_error
 
         async def async_shutdown(self) -> None:
             return None
 
     update_coordinator.DataUpdateCoordinator = DataUpdateCoordinator
     update_coordinator.UpdateFailed = UpdateFailed
-    sys.modules[update_coordinator.__name__] = update_coordinator
 
+    # Install the stubs only while coordinator.py imports them, so modules loaded
+    # later never see this test's DataUpdateCoordinator.
     auth_manager_name = "custom_components.smartthings_find.auth_manager"
-    if auth_manager_name not in sys.modules:
+    replaced = {
+        name: sys.modules.get(name)
+        for name in (update_coordinator.__name__, auth_manager_name)
+    }
+    sys.modules[update_coordinator.__name__] = update_coordinator
+    if replaced[auth_manager_name] is None:
         stub = types.ModuleType(auth_manager_name)
         stub.SmartThingsFindAuthManager = object
         sys.modules[auth_manager_name] = stub
@@ -261,7 +324,14 @@ def _load_coordinator_module():
     module = importlib.util.module_from_spec(spec)
     module.__package__ = "custom_components.smartthings_find"
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        for name, previous in replaced.items():
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
     module._UpdateFailed = UpdateFailed
     return module
 
@@ -312,7 +382,8 @@ class PollingRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         await coordinator._async_keepalive()
 
-        self.assertEqual(1, coordinator.refresh_calls)
+        self.assertEqual(1, coordinator.request_refresh_calls)
+        self.assertEqual(0, coordinator.refresh_calls)
         keepalive = hass.data[utils.DOMAIN]["entry-id"][utils.DIAG_KEEPALIVE]
         self.assertIn("last_success", keepalive)
 
@@ -321,7 +392,7 @@ class PollingRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         await coordinator._async_keepalive()
 
-        self.assertEqual(0, coordinator.refresh_calls)
+        self.assertEqual(0, coordinator.request_refresh_calls)
 
     async def test_keepalive_success_ignores_non_auth_update_errors(self) -> None:
         coordinator, _hass, _entry = _coordinator(_AuthManager())
@@ -330,7 +401,7 @@ class PollingRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         await coordinator._async_keepalive()
 
-        self.assertEqual(0, coordinator.refresh_calls)
+        self.assertEqual(0, coordinator.request_refresh_calls)
 
     async def test_keepalive_failure_is_recorded_without_refresh(self) -> None:
         coordinator, hass, _entry = _coordinator(_AuthManager(RuntimeError("boom")))
@@ -339,10 +410,45 @@ class PollingRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         await coordinator._async_keepalive()
 
-        self.assertEqual(0, coordinator.refresh_calls)
+        self.assertEqual(0, coordinator.request_refresh_calls)
         keepalive = hass.data[utils.DOMAIN]["entry-id"][utils.DIAG_KEEPALIVE]
         self.assertEqual("RuntimeError", keepalive["last_error"])
         self.assertIn("last_failure", keepalive)
+
+    async def test_failing_resume_refresh_does_not_escape_the_keepalive(self) -> None:
+        coordinator, _hass, _entry = _coordinator(_AuthManager())
+        coordinator.last_update_success = False
+        coordinator.last_exception = coordinator_module.ConfigEntryAuthFailed("expired")
+        coordinator.refresh_error = RuntimeError("listener failed")
+
+        await coordinator._async_keepalive()
+
+        self.assertEqual(1, coordinator.request_refresh_calls)
+
+    async def test_keepalive_loop_survives_a_failed_iteration(self) -> None:
+        coordinator, _hass, _entry = _coordinator(_AuthManager())
+        calls = 0
+
+        async def flaky_keepalive() -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("unexpected")
+
+        sleeps = 0
+
+        async def fast_sleep(_delay) -> None:
+            nonlocal sleeps
+            sleeps += 1
+            if sleeps > 2:
+                raise asyncio.CancelledError
+
+        coordinator._async_keepalive = flaky_keepalive
+        with mock.patch.object(coordinator_module.asyncio, "sleep", fast_sleep):
+            with self.assertRaises(asyncio.CancelledError):
+                await coordinator._keepalive_loop()
+
+        self.assertEqual(2, calls)
 
 
 if __name__ == "__main__":

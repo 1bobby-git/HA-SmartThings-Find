@@ -118,7 +118,6 @@ class _Coordinator:
         self.update_interval = timedelta(seconds=120)
         self.last_update_success = False
         self.last_exception = ConfigEntryAuthFailed("user-123 expired")
-        self._unsub_refresh = None
         self.data = {
             "device-1": {
                 "dev_name": "Bobby Tag",
@@ -127,6 +126,9 @@ class _Coordinator:
             },
             "device-2": {},
         }
+
+    def polling_stopped_by_auth_failure(self) -> bool:
+        return not self.last_update_success
 
 
 class _CookieLineJar:
@@ -153,6 +155,7 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(180, result["options"]["keepalive_interval"])
         self.assertTrue(result["options"]["active_mode_smarttags"])
         self.assertFalse(result["options"]["active_mode_others"])
+        self.assertFalse(result["options"]["polling_disabled"])
         self.assertFalse(result["session"]["active"])
         self.assertIsNone(result["session"]["cookies"])
         self.assertIsNone(result["coordinator"])
@@ -212,7 +215,7 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
                 "last_update_success": False,
                 "last_error": "ConfigEntryAuthFailed",
                 "update_interval_seconds": 120.0,
-                "next_poll_scheduled": False,
+                "polling_stopped_by_auth_failure": True,
                 "devices_reported": 2,
                 "devices_with_location": 1,
             },
@@ -266,6 +269,73 @@ class CookieStoreDiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("JSESSIONID=secret-session", line)
         self.assertEqual("configured_cookie", record["loaded_from"])
         self.assertEqual("OSError", record["load_error"])
+
+    async def test_jar_seeded_from_a_replaced_cookie_is_not_saved(self) -> None:
+        entry = _Entry()
+        seeded_from = session_store.cookie_source_hash(entry)
+        entry.data[utils.CONF_COOKIE] = "JSESSIONID=new-secret"
+        hass = types.SimpleNamespace(data={})
+
+        await session_store.persist_cookie_to_store(
+            hass,
+            entry,
+            types.SimpleNamespace(cookie_jar=_CookieLineJar({"JSESSIONID": "secret-session"})),
+            seeded_source_hash=seeded_from,
+        )
+
+        self.assertEqual({}, _MemoryStore.values)
+        line, _scoped = await session_store.async_load_session_cookies(
+            types.SimpleNamespace(data={}), entry
+        )
+        self.assertEqual("JSESSIONID=new-secret", line)
+
+    async def test_matching_seed_source_is_saved(self) -> None:
+        entry = _Entry()
+        hass = types.SimpleNamespace(data={})
+
+        await session_store.persist_cookie_to_store(
+            hass,
+            entry,
+            types.SimpleNamespace(cookie_jar=_CookieLineJar({"JSESSIONID": "rotated"})),
+            seeded_source_hash=session_store.cookie_source_hash(entry),
+        )
+
+        self.assertEqual(1, len(_MemoryStore.values))
+
+
+class SessionEvidenceTests(unittest.TestCase):
+    def test_setup_error_summary_names_source_and_chk_login_result(self) -> None:
+        hass = types.SimpleNamespace(
+            data={
+                utils.DOMAIN: {
+                    "entry-id": {
+                        "_csrf": "secret-csrf",
+                        DIAG_COOKIE_STORE: {"loaded_from": "saved_session"},
+                        utils.DIAG_LAST_CHK_LOGIN: {
+                            "status": 200,
+                            "body": "html",
+                            "csrf": False,
+                            "redirects": 1,
+                            "final_host": "account.samsung.com",
+                        },
+                    }
+                }
+            }
+        )
+
+        evidence = utils.session_evidence(hass, "entry-id")
+
+        self.assertEqual(
+            "cookie source: saved_session, chkLogin.do: HTTP 200 html, "
+            "redirected to account.samsung.com",
+            evidence,
+        )
+
+    def test_summary_without_records(self) -> None:
+        self.assertEqual(
+            "cookie source: unknown",
+            utils.session_evidence(types.SimpleNamespace(data={}), "entry-id"),
+        )
 
 
 if __name__ == "__main__":

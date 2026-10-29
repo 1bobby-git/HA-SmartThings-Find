@@ -37,8 +37,6 @@ from .const import (
 )
 from .utils import COOKIE_NAME_RE, STF_BASE, cookie_scope
 
-_MISSING = object()
-
 
 def _record(value: Any) -> dict[str, Any] | None:
     """Copy a diagnostics record; its writers store only safe scalar values."""
@@ -95,8 +93,7 @@ def _coordinator_summary(coordinator: Any) -> dict[str, Any] | None:
         if isinstance(data, dict)
         else []
     )
-    # Home Assistant keeps the next poll handle here; None means polling stopped.
-    unsub_refresh = getattr(coordinator, "_unsub_refresh", _MISSING)
+    stopped = getattr(coordinator, "polling_stopped_by_auth_failure", None)
 
     return {
         "last_update_success": bool(getattr(coordinator, "last_update_success", False)),
@@ -104,9 +101,9 @@ def _coordinator_summary(coordinator: Any) -> dict[str, Any] | None:
         "update_interval_seconds": (
             interval.total_seconds() if hasattr(interval, "total_seconds") else None
         ),
-        "next_poll_scheduled": (
-            None if unsub_refresh is _MISSING else unsub_refresh is not None
-        ),
+        # Home Assistant schedules no further polls in this state until a
+        # successful KeepAlive requests a refresh.
+        "polling_stopped_by_auth_failure": bool(stopped()) if callable(stopped) else None,
         "devices_reported": len(results),
         "devices_with_location": sum(1 for value in results if value.get("location_found")),
     }
@@ -149,6 +146,8 @@ async def async_get_config_entry_diagnostics(
             "active_mode_others": bool(
                 options.get(CONF_ACTIVE_MODE_OTHERS, CONF_ACTIVE_MODE_OTHERS_DEFAULT)
             ),
+            # "Enable polling" switched off in the entry's system options.
+            "polling_disabled": bool(getattr(entry, "pref_disable_polling", False)),
         },
         "session": {
             "active": session is not None,
