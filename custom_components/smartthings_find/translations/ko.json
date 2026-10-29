@@ -7,7 +7,7 @@
       },
       "cookie": {
         "title": "SmartThings Find Cookie 인증",
-        "description": "1. PC 브라우저에서 [{stf_url}]({stf_url})에 로그인하세요.\n2. 개발자도구(F12) → Network에서 페이지를 새로고침하세요.\n3. `chkLogin.do` 요청을 선택하세요.\n4. Request Headers의 `Cookie:` 전체 줄을 복사해 아래에 붙여넣으세요.\n\n**반드시 `smartthingsfind.samsung.com`의 `chkLogin.do` 요청 쿠키를 사용해야 합니다.** `account.samsung.com` 로그인 페이지에서 생성된 `sa_did`, `sa_trace`, `USAWSWIPSESSIONID`, `stk`, `JSESSIONID` 등은 SmartThings Find 인증 쿠키가 아니며 계정 범위가 더 민감할 수 있으므로 입력하지 마세요.\n\n아이폰 Safari만으로는 요청 Cookie 헤더 전체를 일반적으로 추출할 수 없습니다. 최초 설정은 PC의 Chrome, Edge 또는 Firefox에서 진행하세요.\n\n기존 Samsung Account 호환 항목에서 재인증 또는 재구성을 실행한 경우, 저장 후 Cookie 인증으로 전환되고 이전 장기 인증 파일은 삭제됩니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
+        "description": "1. PC 브라우저에서 [{stf_url}]({stf_url})에 로그인하세요.\n2. 개발자도구(F12) → Network에서 페이지를 새로고침하세요.\n3. `chkLogin.do` 요청을 선택하세요.\n4. Request Headers의 `Cookie:` 전체 줄을 복사해 아래에 붙여넣으세요.\n5. 복사한 뒤에는 로그아웃하지 말고 그 창을 바로 닫으세요. 사이트를 연 채로 두면 마지막 조작 30분 뒤나 로그아웃할 때 사이트가 같은 세션을 끝내 Home Assistant 연결도 끊깁니다. 사생활 보호(시크릿) 창에서 복사하면 가장 안전합니다.\n\n**반드시 `smartthingsfind.samsung.com`의 `chkLogin.do` 요청 쿠키를 사용해야 합니다.** `account.samsung.com` 로그인 페이지에서 생성된 `sa_did`, `sa_trace`, `USAWSWIPSESSIONID`, `stk`, `JSESSIONID` 등은 SmartThings Find 인증 쿠키가 아니며 계정 범위가 더 민감할 수 있으므로 입력하지 마세요.\n\n아이폰 Safari만으로는 요청 Cookie 헤더 전체를 일반적으로 추출할 수 없습니다. 최초 설정은 PC의 Chrome, Edge 또는 Firefox에서 진행하세요.\n\n기존 Samsung Account 호환 항목에서 재인증 또는 재구성을 실행한 경우, 저장 후 Cookie 인증으로 전환되고 이전 장기 인증 파일은 삭제됩니다.\n\n**모드 설명**\n- Passive: 서버 캐시 위치 조회 (배터리 영향 적음)\n- Active: 위치 업데이트 요청 (정확도↑, 배터리 영향↑)",
         "data": {
           "cookie": "chkLogin.do의 Cookie header 전체",
           "update_interval": "업데이트 간격 (초)",

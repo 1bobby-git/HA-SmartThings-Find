@@ -92,12 +92,13 @@ account.samsung.com의 JSESSIONID
 
 ### SmartThings Find Cookie header 추출
 
-1. PC 브라우저에서 `https://smartthingsfind.samsung.com/` 로그인
+1. PC 브라우저에서 `https://smartthingsfind.samsung.com/` 로그인(사생활 보호·시크릿 창 권장)
 2. 개발자도구(F12) → **Network**
 3. 페이지 새로고침
 4. 요청 목록에서 **`chkLogin.do`** 선택
 5. **Request Headers → `Cookie:`** 전체 줄 복사
 6. Home Assistant의 SmartThings Find 설정 화면에 붙여넣기
+7. **로그아웃하지 말고 그 브라우저 창을 닫기**
 
 ![Cookie header example](media/cookie.png)
 
@@ -115,6 +116,16 @@ Cookie: JSESSIONID=...; WMONID=...; ...
 - 브라우저 확장에서 내보낸 JSON 쿠키(배열 또는 객체)
 
 `JSESSIONID` 하나만 임의로 복사하지 말고 `chkLogin.do` 요청의 전체 Cookie 헤더를 사용하세요.
+
+### 복사한 뒤 창을 닫아야 하는 이유
+
+Home Assistant는 Cookie를 복사한 브라우저와 **같은 세션**을 씁니다. SmartThings Find 웹사이트는 열려 있는 탭에서 마지막 조작(기기 선택, 벨 울리기 등) 뒤 30분이 지나거나 서버가 401을 돌려주면 스스로 `logout.do`를 호출해 로그아웃합니다. 로그아웃 버튼을 눌러도 같습니다. 이렇게 세션이 끝나면 Home Assistant도 인증이 끊기고, 30분 뒤 재인증을 요청합니다.
+
+- 사생활 보호(시크릿) 창에서 로그인해 Cookie를 복사합니다.
+- 복사한 뒤에는 로그아웃하지 말고 그 창을 닫습니다. 창을 닫는 것은 로그아웃이 아니므로 세션은 Home Assistant만 계속 씁니다.
+- 평소 쓰는 브라우저에서 SmartThings Find를 계속 쓰려면, Home Assistant용 Cookie는 별도 창에서 복사하세요.
+
+이 동작은 2026-10-29에 SmartThings Find 웹 클라이언트 코드에서 확인했습니다. 삼성이 웹사이트를 바꾸면 달라질 수 있습니다.
 
 ### 아이폰 사용자
 
@@ -263,6 +274,8 @@ Home Assistant → 설정 → 디바이스 및 서비스 → SmartThings Find �
 5. 계속되면 [진단 정보](#진단-정보-다운로드)를 내려받아 이슈에 첨부
 
 ### 약 1시간 뒤 인증이 풀리거나 재시작할 때마다 Cookie를 다시 입력해야 함
+
+먼저 Cookie를 복사한 브라우저 창을 열어 두었거나 그 창에서 로그아웃하지 않았는지 확인하세요. 웹사이트가 마지막 조작 30분 뒤 같은 세션을 로그아웃합니다([복사한 뒤 창을 닫아야 하는 이유](#복사한-뒤-창을-닫아야-하는-이유)). 사생활 보호 창에서 새 Cookie를 복사해 재인증하고, 복사한 뒤 바로 창을 닫으세요.
 
 1.4.6에서 다음 원인을 고쳤습니다.
 

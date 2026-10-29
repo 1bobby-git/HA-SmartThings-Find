@@ -131,11 +131,22 @@ class AuthenticationSurfaceTests(unittest.TestCase):
                     data["config"]["error"],
                 )
 
-    def test_release_version_is_1_4_6(self) -> None:
+    def test_release_version_is_1_4_7(self) -> None:
         manifest = json.loads(
             (COMPONENT_DIR / "manifest.json").read_text(encoding="utf-8")
         )
-        self.assertEqual("1.4.6", manifest["version"])
+        self.assertEqual("1.4.7", manifest["version"])
+
+    def test_cookie_step_says_to_close_the_window_without_signing_out(self) -> None:
+        paths = [COMPONENT_DIR / "strings.json"] + sorted(
+            (COMPONENT_DIR / "translations").glob("*.json")
+        )
+        for path in paths:
+            with self.subTest(path=path.name):
+                data = json.loads(path.read_text(encoding="utf-8"))
+                description = data["config"]["step"]["cookie"]["description"]
+                self.assertIn("\n5. ", description)
+                self.assertIn("30", description)
 
 
 if __name__ == "__main__":
