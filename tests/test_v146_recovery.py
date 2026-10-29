@@ -234,6 +234,16 @@ class KeepaliveFallbackTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ConfigEntryAuthFailed):
             await utils.keepalive_ping(_hass_with_cached_csrf(), session, "entry-id")
 
+    async def test_redirect_within_the_site_is_also_an_auth_failure(self) -> None:
+        session = _FakeSession(
+            [
+                _FakeResponse("<html>landing</html>", history=(object(),)),
+                _FakeResponse("<html>landing</html>"),
+            ]
+        )
+        with self.assertRaises(ConfigEntryAuthFailed):
+            await utils.keepalive_ping(_hass_with_cached_csrf(), session, "entry-id")
+
     async def test_forbidden_chk_login_with_a_working_device_list_succeeds(self) -> None:
         session = _FakeSession(
             [_FakeResponse("denied", status=403), _FakeResponse(json.dumps({"deviceList": []}))]

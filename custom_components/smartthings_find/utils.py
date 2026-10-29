@@ -102,6 +102,32 @@ def session_evidence(hass: HomeAssistant, entry_id: str) -> str:
     return ", ".join(parts)
 
 
+_LAST_SETUP_EVIDENCE = "_last_setup_evidence"
+
+
+def setup_failure_evidence(hass: HomeAssistant, entry_id: str) -> str:
+    """Return the session summary for a setup error and warn once per new summary.
+
+    Home Assistant logs a setup retry below warning level, so without this the
+    summary would only show as the retry reason on the integrations page.
+    """
+    evidence = session_evidence(hass, entry_id)
+    runtime = _entry_runtime(hass, entry_id)
+    if runtime.get(_LAST_SETUP_EVIDENCE) != evidence:
+        runtime[_LAST_SETUP_EVIDENCE] = evidence
+        _LOGGER.warning(
+            "SmartThings Find could not confirm the web session (%s)", evidence
+        )
+    return evidence
+
+
+def clear_setup_failure_evidence(hass: HomeAssistant, entry_id: str) -> None:
+    """Forget the last setup-error summary after a successful setup."""
+    entry_data = hass.data.get(DOMAIN, {}).get(entry_id)
+    if entry_data is not None:
+        entry_data.pop(_LAST_SETUP_EVIDENCE, None)
+
+
 COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 STF_HOST = str(getattr(STF_BASE, "host", None) or "smartthingsfind.samsung.com")
@@ -584,16 +610,16 @@ async def _device_list_ping(session: aiohttp.ClientSession, csrf: str) -> None:
 def _chk_login_signals_expiry(record: Mapping[str, Any] | None) -> bool:
     """Return true when chkLogin.do answered with an explicit sign-out signal.
 
-    ``fail``, ``Logout``, HTTP 401 and a redirect away from SmartThings Find (to
-    the Samsung sign-in page) mean the session ended. A page without a CSRF
-    token served by SmartThings Find itself can also be a maintenance page.
+    ``fail``, ``Logout``, HTTP 401 and any redirect (a signed-in chkLogin.do
+    never redirects; an expired one is sent to a sign-in or landing page) mean
+    the session ended. A page without a CSRF token that chkLogin.do served
+    directly can also be a maintenance page.
     """
     if not record:
         return True
     if record.get("body") in ("fail", "Logout") or record.get("status") == 401:
         return True
-    final_host = record.get("final_host")
-    return bool(record.get("redirects")) and final_host not in (None, STF_HOST)
+    return bool(record.get("redirects"))
 
 
 async def keepalive_ping(hass: HomeAssistant, session: aiohttp.ClientSession, entry_id: str) -> None:

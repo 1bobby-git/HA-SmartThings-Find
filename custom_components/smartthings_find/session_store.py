@@ -317,7 +317,13 @@ def _scoped_cookies_from_session(session: aiohttp.ClientSession) -> list[dict[st
         )
         if record is not None:
             records[(domain, path, name)] = record
-    return [records[key] for key in sorted(records)][:MAX_SCOPED_COOKIES]
+
+    def _priority(key: tuple[str, str, str]) -> tuple[bool, tuple[str, str, str]]:
+        # Host-only twins only refine a parent cookie, so path cookies keep
+        # their slots under the cap first.
+        return (key[:2] == (STF_HOST, "/"), key)
+
+    return [records[key] for key in sorted(records, key=_priority)][:MAX_SCOPED_COOKIES]
 
 
 def _cookie_store_lock(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:

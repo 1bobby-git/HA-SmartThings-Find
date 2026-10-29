@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import logging
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -33,16 +31,15 @@ from .session_store import async_remove_session_store
 from .utils import (
     auth_failure_is_persistent,
     clear_auth_failure,
+    clear_setup_failure_evidence,
     make_session,
     session_evidence,
+    setup_failure_evidence,
 )
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS = [Platform.DEVICE_TRACKER, Platform.SENSOR, Platform.BUTTON]
-
-_LOGGER = logging.getLogger(__name__)
-_LAST_SETUP_EVIDENCE = "_last_setup_evidence"
 
 
 async def async_setup(hass: HomeAssistant, _config) -> bool:
@@ -128,7 +125,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         migrate_registered_identifiers(hass, entry.entry_id, devices)
         entry.async_on_unload(entry.add_update_listener(_async_update_listener))
         clear_auth_failure(hass, entry.entry_id)
-        runtime.pop(_LAST_SETUP_EVIDENCE, None)
+        clear_setup_failure_evidence(hass, entry.entry_id)
         return True
 
     except ConfigEntryAuthFailed as err:
@@ -150,21 +147,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             runtime.pop(key, None)
 
         # The diagnostics download needs a loaded entry, so setup errors carry
-        # the session evidence (labels and HTTP status only). Home Assistant
-        # logs a setup retry below warning level, so log each new summary once.
-        evidence = session_evidence(hass, entry.entry_id)
+        # the session evidence (labels and HTTP status only).
         if not auth_failure_is_persistent(hass, entry.entry_id):
-            if runtime.get(_LAST_SETUP_EVIDENCE) != evidence:
-                runtime[_LAST_SETUP_EVIDENCE] = evidence
-                _LOGGER.warning(
-                    "SmartThings Find could not confirm the web session (%s)",
-                    evidence,
-                )
+            evidence = setup_failure_evidence(hass, entry.entry_id)
             raise ConfigEntryNotReady(
                 "SmartThings Find authentication is temporarily unavailable; "
                 "automatic session recovery will retry before reauthentication "
                 f"({evidence})"
             ) from err
+        evidence = session_evidence(hass, entry.entry_id)
         raise ConfigEntryAuthFailed(f"{err} ({evidence})") from err
 
     except Exception as err:

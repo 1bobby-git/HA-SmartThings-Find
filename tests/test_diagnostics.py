@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import sys
 import types
 import unittest
@@ -351,6 +352,27 @@ class SessionEvidenceTests(unittest.TestCase):
         self.assertEqual(
             "cookie source: unknown",
             utils.session_evidence(types.SimpleNamespace(data={}), "entry-id"),
+        )
+
+    def test_setup_failure_warns_once_per_new_summary(self) -> None:
+        hass = types.SimpleNamespace(
+            data={utils.DOMAIN: {"entry-id": {DIAG_COOKIE_STORE: {"loaded_from": "saved_session"}}}}
+        )
+        logger = logging.getLogger(utils.__name__)
+        with self.assertLogs(logger, level="WARNING") as logs:
+            first = utils.setup_failure_evidence(hass, "entry-id")
+            utils.setup_failure_evidence(hass, "entry-id")
+            hass.data[utils.DOMAIN]["entry-id"][DIAG_COOKIE_STORE]["loaded_from"] = (
+                "configured_cookie"
+            )
+            utils.setup_failure_evidence(hass, "entry-id")
+            utils.clear_setup_failure_evidence(hass, "entry-id")
+            utils.setup_failure_evidence(hass, "entry-id")
+
+        self.assertEqual("cookie source: saved_session", first)
+        self.assertEqual(3, len(logs.records))
+        self.assertTrue(
+            all("could not confirm the web session" in line for line in logs.output)
         )
 
 

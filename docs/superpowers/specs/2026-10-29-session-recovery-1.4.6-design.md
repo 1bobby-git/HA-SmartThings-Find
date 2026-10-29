@@ -106,7 +106,13 @@
 ### 8.1 2차 리뷰 반영
 
 - 재시작·세션 재구성 뒤에도 서버가 설정한 host-only 쿠키 유지: 상위 도메인 쌍이 있는 host-only 루트 쿠키를 `scoped`에 기록하고, 복원 때 그 이름은 붙여 넣은 값(seed)에서 뺍니다(`seed_session_cookies`). 상위 도메인으로만 회전된 붙여 넣은 값은 이전처럼 정리됩니다.
-- KeepAlive 대체 판단의 경계: `chkLogin.do`와 기기 목록이 모두 로그인도 로그아웃도 아닌 응답이면 일시 오류입니다. `chkLogin.do`의 `fail`·`Logout`·HTTP 401·다른 호스트(삼성 로그인 페이지)로의 리디렉트, 기기 목록의 인증 거부만 인증 실패입니다.
+- KeepAlive 대체 판단의 경계: `chkLogin.do`와 기기 목록이 모두 로그인도 로그아웃도 아닌 응답이면 일시 오류입니다. `chkLogin.do`의 `fail`·`Logout`·HTTP 401·리디렉트(로그인된 `chkLogin.do`는 리디렉트하지 않음), 기기 목록의 인증 거부만 인증 실패입니다.
 - 설정 실패 요약: HA는 설정 재시도를 경고보다 낮은 수준으로 기록하므로, 요약이 바뀔 때 한 번 경고를 남깁니다. 런타임 캐시에서 다시 읽을 때도 쿠키 출처를 기록해 재시도 중의 출처 표시가 맞습니다.
 - 예상하지 못한 KeepAlive 반복 오류는 경고로 남깁니다.
 - CI: Python 3.12 + aiohttp 3.11.18(hassfest 포함), Python 3.13 + aiohttp 3.14.5는 필수, Python 3.14 + 최신 aiohttp는 참고용(`continue-on-error`)입니다.
+
+### 8.2 3차 리뷰 반영 (APPROVED, 선택 사항)
+
+- 같은 호스트 안의 리디렉트도 로그아웃 신호로 봅니다. 로그인 상태의 `chkLogin.do`는 리디렉트하지 않으므로, passive 전용 설정에서 만료가 같은 호스트의 페이지로 돌아와도 재인증 요청이 나옵니다.
+- `scoped` 50개 제한에서 host-only 쌍을 마지막에 둬 하위 경로 쿠키가 먼저 자리를 갖습니다.
+- 설정 실패 경고는 `utils.setup_failure_evidence`로 옮겨 테스트합니다. KeepAlive 흐름 테스트는 자체 utils 뒤에 코디네이터를 불러와 테스트 모듈 import 순서와 관계없이 같은 예외 클래스를 씁니다.

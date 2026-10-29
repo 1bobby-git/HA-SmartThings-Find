@@ -483,5 +483,41 @@ class ScopedCookiePersistenceTests(unittest.IsolatedAsyncioTestCase):
             await session.close()
 
 
+class ScopedRecordCapTests(unittest.TestCase):
+    """Host-only twins never push path cookies out of the stored records."""
+
+    def test_path_cookies_keep_their_slots_before_host_only_twins(self) -> None:
+        from http.cookies import Morsel
+
+        def morsel(name: str, value: str, domain: str, path: str) -> Morsel:
+            item: Morsel = Morsel()
+            item.set(name, value, value)
+            item["domain"] = domain
+            item["path"] = path
+            return item
+
+        jar = []
+        for index in range(25):
+            jar.append(morsel(f"N{index:02d}", "parent", ".samsung.com", "/"))
+            jar.append(morsel(f"N{index:02d}", "host", "", "/"))
+        for index in range(5):
+            jar.append(morsel(f"D{index}", "path", "", "/device"))
+
+        records = session_store._scoped_cookies_from_session(
+            types.SimpleNamespace(cookie_jar=jar)
+        )
+
+        self.assertEqual(session_store.MAX_SCOPED_COOKIES, len(records))
+        self.assertEqual(5, sum(record["path"] == "/device" for record in records))
+        self.assertEqual(25, sum(record["domain"] == "samsung.com" for record in records))
+        self.assertEqual(
+            20,
+            sum(
+                (record["domain"], record["path"]) == (utils.STF_HOST, "/")
+                for record in records
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

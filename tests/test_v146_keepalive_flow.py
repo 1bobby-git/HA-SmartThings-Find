@@ -15,9 +15,12 @@ from aiohttp_support import real_aiohttp_available
 HAS_AIOHTTP = real_aiohttp_available()
 
 from test_utils_location import COMPONENT_DIR, _load_utils_module  # noqa: E402
-from test_v146_recovery import coordinator_module  # noqa: E402
+from test_v146_recovery import _load_coordinator_module  # noqa: E402
 
 utils = _load_utils_module()
+# Load the coordinator after this module's utils so both bind the same Home
+# Assistant exception classes, whatever order other test modules import in.
+coordinator_module = _load_coordinator_module()
 ConfigEntryAuthFailed = utils.ConfigEntryAuthFailed
 HomeAssistantError = utils.HomeAssistantError
 PACKAGE = "custom_components.smartthings_find"
@@ -193,12 +196,15 @@ class KeepaliveFlowTests(unittest.IsolatedAsyncioTestCase):
             [_Response("<html>maintenance</html>")], [_Response("<html>maintenance</html>")]
         )
         runtime = hass.data[utils.DOMAIN]["entry-id"]
+        started = datetime.now(tz=timezone.utc)
+        runtime["auth_failure_started"] = started
 
         await coordinator._async_keepalive()
 
         self.assertEqual(2, session.get_calls)
         self.assertEqual("setup-csrf", runtime["_csrf"])
-        self.assertNotIn("auth_failure_started", runtime)
+        # A temporary error neither clears nor restarts a running grace timer.
+        self.assertEqual(started, runtime["auth_failure_started"])
         self.assertEqual("HomeAssistantError", runtime[utils.DIAG_KEEPALIVE]["last_error"])
         self.assertEqual(0, entry.reauth_calls)
 
