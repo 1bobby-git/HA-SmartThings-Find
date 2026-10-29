@@ -86,8 +86,13 @@ def _load_auth_manager_module():
 
     session_store = types.ModuleType("custom_components.smartthings_find.session_store")
 
+    scoped_snapshot: list = []
+
     async def async_load_cookie_line(_hass, entry):
         return str(entry.data.get("cookie") or "")
+
+    async def async_load_session_cookies(_hass, entry):
+        return str(entry.data.get("cookie") or ""), list(scoped_snapshot)
 
     persisted_cookie_snapshots = []
 
@@ -95,6 +100,7 @@ def _load_auth_manager_module():
         persisted_cookie_snapshots.append(dict(session.cookie_jar.values))
 
     session_store.async_load_cookie_line = async_load_cookie_line
+    session_store.async_load_session_cookies = async_load_session_cookies
     session_store.persist_cookie_to_store = persist_cookie_to_store
     sys.modules[session_store.__name__] = session_store
 
@@ -112,10 +118,22 @@ def _load_auth_manager_module():
     def apply_cookies_to_session(session, cookies):
         session.cookie_jar.values.update(cookies)
 
+    applied_scoped: list = []
+    normalize_calls: list = []
+
+    def apply_scoped_cookies(session, records):
+        applied_scoped.append(list(records))
+
+    def normalize_cookie_jar(session):
+        normalize_calls.append(dict(session.cookie_jar.values))
+        return 0
+
     async def placeholder(*_args, **_kwargs):
         return None
 
     utils.apply_cookies_to_session = apply_cookies_to_session
+    utils.apply_scoped_cookies = apply_scoped_cookies
+    utils.normalize_cookie_jar = normalize_cookie_jar
     utils.clear_auth_failure = lambda *_args, **_kwargs: None
     utils.fetch_csrf = placeholder
     utils.get_device_location = placeholder
@@ -133,6 +151,9 @@ def _load_auth_manager_module():
     spec.loader.exec_module(module)
     module._TestAccountAuth = SamsungAccountAuth
     module._persisted_cookie_snapshots = persisted_cookie_snapshots
+    module._scoped_snapshot = scoped_snapshot
+    module._applied_scoped = applied_scoped
+    module._normalize_calls = normalize_calls
     return module
 
 
@@ -325,6 +346,77 @@ class AuthManagerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(1, send_calls)
         self.assertEqual([True], manager._account_auth.calls)
+
+    async def test_new_manager_clears_a_stale_reconfiguring_guard(self) -> None:
+        """Reauth while the entry was not loaded must not disable persistence (#9)."""
+        hass = _Hass()
+        hass.data = {auth_manager.DOMAIN: {"entry-id": {"_auth_reconfiguring": True}}}
+        session = _Session()
+        manager = auth_manager.SmartThingsFindAuthManager(
+            hass,
+            _Entry(auth_manager.AUTH_METHOD_COOKIE),
+            session,
+        )
+        self.assertNotIn(
+            "_auth_reconfiguring", hass.data[auth_manager.DOMAIN]["entry-id"]
+        )
+
+        auth_manager._persisted_cookie_snapshots.clear()
+        session.cookie_jar.values["JSESSIONID"] = "rotated"
+
+        async def operation():
+            return "ok"
+
+        self.assertEqual("ok", await manager.async_read(operation))
+        self.assertEqual(
+            [{"JSESSIONID": "rotated"}], auth_manager._persisted_cookie_snapshots
+        )
+
+    async def test_jar_is_reconciled_but_not_saved_while_a_flow_replaces_credentials(
+        self,
+    ) -> None:
+        hass = _Hass()
+        session = _Session()
+        manager = auth_manager.SmartThingsFindAuthManager(
+            hass,
+            _Entry(auth_manager.AUTH_METHOD_COOKIE),
+            session,
+        )
+        hass.data[auth_manager.DOMAIN]["entry-id"]["_auth_reconfiguring"] = True
+        auth_manager._persisted_cookie_snapshots.clear()
+        auth_manager._normalize_calls.clear()
+
+        async def operation():
+            return "ok"
+
+        await manager.async_read(operation)
+
+        self.assertEqual([], auth_manager._persisted_cookie_snapshots)
+        self.assertGreaterEqual(len(auth_manager._normalize_calls), 1)
+
+    async def test_initialize_restores_domain_and_path_scoped_cookies(self) -> None:
+        hass = _Hass()
+        session = _Session()
+        manager = auth_manager.SmartThingsFindAuthManager(
+            hass,
+            _Entry(auth_manager.AUTH_METHOD_COOKIE, cookie="JSESSIONID=seed"),
+            session,
+        )
+        record = {"name": "SSO", "value": "v", "domain": "samsung.com", "path": "/"}
+        auth_manager._scoped_snapshot[:] = [record]
+        auth_manager._applied_scoped.clear()
+
+        async def fetch_csrf(*_args, **_kwargs):
+            return "fresh"
+
+        auth_manager.fetch_csrf = fetch_csrf
+        try:
+            await manager.async_initialize()
+        finally:
+            auth_manager._scoped_snapshot.clear()
+
+        self.assertEqual({"JSESSIONID": "seed"}, session.cookie_jar.values)
+        self.assertEqual([[record]], auth_manager._applied_scoped)
 
 
 if __name__ == "__main__":

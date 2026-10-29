@@ -8,7 +8,7 @@ import math
 import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
-from http.cookies import CookieError, SimpleCookie
+from http.cookies import CookieError, Morsel, SimpleCookie
 from typing import Any, TypeVar
 
 import aiohttp
@@ -49,6 +49,84 @@ URL_SET_LAST_DEVICE = STF_BASE / STF_SET_LAST_DEVICE_PATH
 URL_ADD_OPERATION = STF_BASE / STF_ADD_OPERATION_PATH  # requires ?_csrf=
 
 COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+STF_HOST = str(getattr(STF_BASE, "host", None) or "smartthingsfind.samsung.com")
+
+
+def _raw_morsel(name: str, value: str) -> Morsel | str:
+    """Return a Morsel that sends ``value`` exactly as the browser did.
+
+    A plain ``{name: value}`` seed makes aiohttp wrap values containing ``/``,
+    ``+``, ``=`` and similar characters in double quotes, which the browser never
+    does. A Morsel whose coded value is the raw value, together with
+    ``CookieJar(quote_cookie=False)``, keeps the value verbatim on every aiohttp
+    release Home Assistant has shipped.
+    """
+    morsel: Morsel = Morsel()
+    try:
+        morsel.set(name, value, value)
+    except CookieError:
+        return value
+    return morsel
+
+
+def cookie_scope(morsel: Any) -> tuple[str, str]:
+    """Return the (domain, path) a jar morsel applies to."""
+    domain = str(morsel.get("domain") or "").lstrip(".").lower() or STF_HOST
+    path = str(morsel.get("path") or "/") or "/"
+    return domain, path
+
+
+def is_stf_cookie_domain(domain: str) -> bool:
+    """Return true for SmartThings Find's host and the domains above it."""
+    return domain == STF_HOST or STF_HOST.endswith("." + domain)
+
+
+def _jar_morsels(session: Any) -> list[Any] | None:
+    try:
+        return list(session.cookie_jar)
+    except TypeError:
+        return None
+
+
+def normalize_cookie_jar(session: Any) -> int:
+    """Drop pasted host-only cookies shadowed by a server-set parent-domain cookie.
+
+    A pasted Cookie header carries no Domain attribute, so every seed becomes a
+    host-only cookie for smartthingsfind.samsung.com. When Samsung later rotates
+    the same cookie with ``Domain=.samsung.com``, aiohttp keeps both and keeps
+    sending the stale host-only value. The parent-domain copy can only come from
+    a server response, so it is the current one. Returns the number removed.
+    """
+    morsels = _jar_morsels(session)
+    if not morsels:
+        return 0
+
+    parent_root: set[str] = set()
+    host_root: set[str] = set()
+    for morsel in morsels:
+        domain, path = cookie_scope(morsel)
+        if path != "/" or not is_stf_cookie_domain(domain):
+            continue
+        if domain == STF_HOST:
+            host_root.add(morsel.key)
+        else:
+            parent_root.add(morsel.key)
+
+    shadowed = host_root & parent_root
+    clear = getattr(session.cookie_jar, "clear", None)
+    if not shadowed or not callable(clear):
+        return 0
+
+    clear(
+        lambda morsel: morsel.key in shadowed
+        and cookie_scope(morsel) == (STF_HOST, "/")
+    )
+    _LOGGER.debug(
+        "Dropped %s pasted cookie(s) replaced by Samsung's parent-domain cookie",
+        len(shadowed),
+    )
+    return len(shadowed)
 
 # JSON-safe smartthings identifier encoding
 _ST_IDENT_PREFIX = "smartthings::"
@@ -146,17 +224,41 @@ def parse_cookie_header(cookie_header_line: str) -> dict[str, str]:
 
 
 def apply_cookies_to_session(session: aiohttp.ClientSession, cookies: dict[str, str]) -> None:
-    """aiohttp requires response_url to be yarl.URL, not str."""
+    """Seed pasted or restored cookies as host-only cookies, values verbatim.
+
+    aiohttp requires response_url to be yarl.URL, not str.
+    """
     if not cookies:
         return
-    session.cookie_jar.update_cookies(cookies, response_url=STF_BASE)
+    session.cookie_jar.update_cookies(
+        {name: _raw_morsel(name, value) for name, value in cookies.items()},
+        response_url=STF_BASE,
+    )
+
+
+def apply_scoped_cookies(
+    session: aiohttp.ClientSession,
+    records: list[dict[str, str]],
+) -> None:
+    """Restore cookies that carry a parent Domain or a non-root Path."""
+    for record in records or ():
+        name = record["name"]
+        morsel = _raw_morsel(name, record["value"])
+        if not isinstance(morsel, Morsel):
+            continue
+        if record["domain"] != STF_HOST:
+            morsel["domain"] = record["domain"]
+        morsel["path"] = record["path"]
+        # One record at a time: several records may share a name.
+        session.cookie_jar.update_cookies({name: morsel}, response_url=STF_BASE)
 
 
 def make_session(hass: HomeAssistant) -> aiohttp.ClientSession:
     """Dedicated session (not Home Assistant managed session)."""
     _ = hass  # keep signature for compatibility (unused)
 
-    jar = aiohttp.CookieJar(unsafe=True)
+    # quote_cookie=False sends cookie values exactly as the browser does.
+    jar = aiohttp.CookieJar(unsafe=True, quote_cookie=False)
 
     # 너무 공격적이지 않게 기본 타임아웃만 설정
     timeout = aiohttp.ClientTimeout(total=30)

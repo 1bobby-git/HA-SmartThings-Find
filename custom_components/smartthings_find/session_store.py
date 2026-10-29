@@ -19,7 +19,14 @@ from .const import (
     CONF_COOKIE,
     DOMAIN,
 )
-from .utils import COOKIE_NAME_RE, STF_BASE, parse_cookie_header
+from .utils import (
+    COOKIE_NAME_RE,
+    STF_BASE,
+    STF_HOST,
+    cookie_scope,
+    is_stf_cookie_domain,
+    parse_cookie_header,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,6 +35,11 @@ _STORE_RUNTIME_KEY = "_session_cookie_store"
 _COOKIE_CACHE_KEY = "_session_cookie_cache"
 _SOURCE_HASH_KEY = "source_hash"
 _COOKIE_KEY = "cookie"
+# Cookies the Cookie-header line cannot describe: a parent Domain or a non-root
+# Path. Older releases ignore this key and keep reading the line.
+_SCOPED_KEY = "scoped"
+MAX_SCOPED_COOKIES = 50
+_SCOPED_FIELDS = ("name", "value", "domain", "path")
 
 
 def _configured_cookie(entry: Any) -> str:
@@ -105,19 +117,57 @@ def _stored_cookie_snapshot(
     return cookie_line
 
 
+def _valid_scoped_record(record: Any) -> dict[str, str] | None:
+    if not isinstance(record, dict):
+        return None
+    values = {field: record.get(field) for field in _SCOPED_FIELDS}
+    if not all(isinstance(value, str) for value in values.values()):
+        return None
+    if not COOKIE_NAME_RE.match(values["name"]):
+        return None
+    if any(char in values["value"] for char in ";\r\n"):
+        return None
+    if not values["path"].startswith("/") or not is_stf_cookie_domain(values["domain"]):
+        return None
+    return values
+
+
+def _stored_scoped_cookies(payload: Any) -> list[dict[str, str]]:
+    raw = payload.get(_SCOPED_KEY) if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        return []
+    records: list[dict[str, str]] = []
+    for item in raw:
+        record = _valid_scoped_record(item)
+        if record is not None:
+            records.append(record)
+        if len(records) >= MAX_SCOPED_COOKIES:
+            break
+    return records
+
+
 async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
     """Load a rotated cookie only when it belongs to this auth source."""
+    cookie_line, _scoped = await async_load_session_cookies(hass, entry)
+    return cookie_line
+
+
+async def async_load_session_cookies(
+    hass: HomeAssistant,
+    entry: Any,
+) -> tuple[str, list[dict[str, str]]]:
+    """Load the rotated cookie line and its domain/path-scoped cookies."""
     source = _source_identity(entry)
     fallback = _fallback_cookie(entry)
     if not source:
-        return fallback
+        return fallback, []
 
     source_hash = _source_hash(source)
     runtime = _runtime_data(hass, entry.entry_id)
     cached = runtime.get(_COOKIE_CACHE_KEY)
     cached_cookie = _stored_cookie_snapshot(cached, {source_hash})
     if cached_cookie is not None:
-        return cached_cookie
+        return cached_cookie, _stored_scoped_cookies(cached)
 
     try:
         stored = await _store(hass, entry.entry_id).async_load()
@@ -126,7 +176,7 @@ async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
             "Unable to load the private SmartThings Find session store: %s",
             type(err).__name__,
         )
-        return fallback
+        return fallback, []
 
     legacy_hash = _legacy_source_hash(entry)
     accepted_hashes: set[str | None] = {source_hash}
@@ -137,10 +187,13 @@ async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
         accepted_hashes,
     )
     if stored_cookie is not None:
-        payload = {
+        scoped = _stored_scoped_cookies(stored)
+        payload: dict[str, Any] = {
             _SOURCE_HASH_KEY: source_hash,
             _COOKIE_KEY: stored_cookie,
         }
+        if scoped:
+            payload[_SCOPED_KEY] = scoped
         runtime[_COOKIE_CACHE_KEY] = payload
         if stored.get(_SOURCE_HASH_KEY) != source_hash:
             try:
@@ -150,13 +203,13 @@ async def async_load_cookie_line(hass: HomeAssistant, entry: Any) -> str:
                     "Unable to migrate the legacy session-store boundary (%s)",
                     type(err).__name__,
                 )
-        return stored_cookie
+        return stored_cookie, scoped
 
     runtime[_COOKIE_CACHE_KEY] = {
         _SOURCE_HASH_KEY: source_hash,
         _COOKIE_KEY: fallback,
     }
-    return fallback
+    return fallback, []
 
 
 def _cookie_line_from_session(session: aiohttp.ClientSession) -> str:
@@ -169,6 +222,33 @@ def _cookie_line_from_session(session: aiohttp.ClientSession) -> str:
     return "; ".join(
         f"{name}={value}" for name, value in sorted(current.items())
     )
+
+
+def _scoped_cookies_from_session(session: aiohttp.ClientSession) -> list[dict[str, str]]:
+    """Describe cookies whose Domain or Path the Cookie-header line would lose.
+
+    Parent-domain cookies on ``/`` stay in the line as well, so a downgrade keeps
+    sending them; restoring both is reconciled by ``normalize_cookie_jar``.
+    """
+    try:
+        morsels = list(session.cookie_jar)
+    except TypeError:
+        return []
+
+    records: dict[tuple[str, str, str], dict[str, str]] = {}
+    for morsel in morsels:
+        name = getattr(morsel, "key", "")
+        if not isinstance(name, str) or not COOKIE_NAME_RE.match(name):
+            continue
+        domain, path = cookie_scope(morsel)
+        if not is_stf_cookie_domain(domain) or (domain, path) == (STF_HOST, "/"):
+            continue
+        record = _valid_scoped_record(
+            {"name": name, "value": str(morsel.value), "domain": domain, "path": path}
+        )
+        if record is not None:
+            records[(domain, path, name)] = record
+    return [records[key] for key in sorted(records)][:MAX_SCOPED_COOKIES]
 
 
 def _cookie_store_lock(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:
@@ -209,10 +289,13 @@ async def _persist_cookie_to_store_locked(
         return
 
     cookie_line = _cookie_line_from_session(session)
-    payload = {
+    payload: dict[str, Any] = {
         _SOURCE_HASH_KEY: _source_hash(source),
         _COOKIE_KEY: cookie_line,
     }
+    scoped = _scoped_cookies_from_session(session)
+    if scoped:
+        payload[_SCOPED_KEY] = scoped
     runtime = _runtime_data(hass, entry.entry_id)
     cached = runtime.get(_COOKIE_CACHE_KEY)
     if cached == payload:
@@ -222,8 +305,9 @@ async def _persist_cookie_to_store_locked(
     runtime[_COOKIE_CACHE_KEY] = payload
     _LOGGER.debug(
         "Persisted current SmartThings Find cookie jar in private storage "
-        "(cookie_count=%s)",
+        "(cookie_count=%s, scoped_count=%s)",
         len(parse_cookie_header(cookie_line)),
+        len(scoped),
     )
 
 
